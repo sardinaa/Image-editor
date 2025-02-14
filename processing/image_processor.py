@@ -139,24 +139,63 @@ class ImageProcessor:
         return cv2.merge([b, g, r])
 
     def apply_rgb_curves(self, image, curves):
-        # curves: a dict with lookup tables for each channel, e.g., {"r": table, "g": table, "b": table}
+        """
+        Applies custom RGB curves to the image.
+        curves: a dict with keys 'r', 'g', 'b'. Each value is a list of control points [(x, y), ...]
+        where x and y are in [0,255]. If a channel is missing, that channel remains unchanged.
+        """
         if curves is None:
             return image
+        # Split channels (note: OpenCV uses BGR order)
         b, g, r = cv2.split(image)
-        if "r" in curves:
-            r = cv2.LUT(r, curves["r"])
-        if "g" in curves:
-            g = cv2.LUT(g, curves["g"])
-        if "b" in curves:
-            b = cv2.LUT(b, curves["b"])
+        if "r" in curves and curves["r"]:
+            lut_r = self.generate_lut_from_points(curves["r"])
+            r = cv2.LUT(r, lut_r)
+        if "g" in curves and curves["g"]:
+            lut_g = self.generate_lut_from_points(curves["g"])
+            g = cv2.LUT(g, lut_g)
+        if "b" in curves and curves["b"]:
+            lut_b = self.generate_lut_from_points(curves["b"])
+            b = cv2.LUT(b, lut_b)
         return cv2.merge([b, g, r])
 
-    def crop_and_rotate(self, image, crop_rect, angle):
-        # crop_rect: (x, y, width, height); angle: rotation in degrees.
+
+    def crop_rotate_flip(self, image, crop_rect, angle, flip_horizontal=False, flip_vertical=False):
+        """
+        Crop, rotate, and optionally flip the image.
+        crop_rect: (x, y, width, height) in original image coordinates.
+        angle: rotation in degrees.
+        flip_horizontal/vertical: booleans.
+        
+        Uses BORDER_REPLICATE to avoid black areas.
+        """
         x, y, w, h = crop_rect
+        # Crop the image using the provided rectangle.
         cropped = image[y:y+h, x:x+w]
         (h_img, w_img) = cropped.shape[:2]
         center = (w_img // 2, h_img // 2)
+        # Obtain rotation matrix; note: positive angle rotates counter-clockwise.
         M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        rotated = cv2.warpAffine(cropped, M, (w_img, h_img))
+        # Use BORDER_REPLICATE to fill borders.
+        rotated = cv2.warpAffine(cropped, M, (w_img, h_img), borderMode=cv2.BORDER_REPLICATE)
+        if flip_horizontal:
+            rotated = cv2.flip(rotated, 1)
+        if flip_vertical:
+            rotated = cv2.flip(rotated, 0)
         return rotated
+
+    def generate_lut_from_points(points):
+        """
+        Given a list of control points (x, y) where both x and y are in the range 0-255,
+        generates a 256-length lookup table using linear interpolation.
+        """
+        if len(points) < 2:
+            # Not enough points, return identity LUT
+            return np.arange(256, dtype=np.uint8)
+        points = sorted(points, key=lambda p: p[0])
+        xs, ys = zip(*points)
+        xs = np.array(xs)
+        ys = np.array(ys)
+        # Create LUT for x = 0 to 255
+        lut = np.interp(np.arange(256), xs, ys)
+        return lut.astype(np.uint8)

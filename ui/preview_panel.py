@@ -89,26 +89,39 @@ class PreviewPanel:
         # Calculate zoomed dimensions
         zoomed_w = int(w * self.zoom)
         zoomed_h = int(h * self.zoom)
-
-        # Get preview panel dimensions
+        slider_height = 40  # reserved for the zoom slider
         preview_w = self.base_width
-        preview_h = self.base_height - 40  # Subtract space for zoom slider
-
-        # Calculate center-based offset
-        center_x = preview_w // 2
-        center_y = preview_h // 2
-        img_center_x = zoomed_w // 2
-        img_center_y = zoomed_h // 2
-
-        # Compute new top-left position to keep the zoom centered
-        new_x = center_x - img_center_x + self.offset[0]
-        new_y = center_y - img_center_y + self.offset[1]
-
-        # Draw the image centered
+        preview_h = self.base_height - slider_height
+        center_x = preview_w / 2
+        center_y = preview_h / 2
+        # Center the image in the preview area
+        new_x = center_x - zoomed_w / 2 + self.offset[0]
+        new_y = center_y - zoomed_h / 2 + self.offset[1]
+        
+        # Draw the image
         dpg.draw_image(self.texture_tag,
                     pmin=[new_x, new_y],
                     pmax=[new_x + zoomed_w, new_y + zoomed_h],
                     parent=self.drawlist_tag)
+            
+        # --- Draw the crop grid overlay ---
+        # Get crop parameters from the tool panel (assume they are set)
+        if dpg.get_value("crop_mode"):
+            crop_x = dpg.get_value("crop_x")
+            crop_y = dpg.get_value("crop_y")
+            crop_w = dpg.get_value("crop_w")
+            crop_h = dpg.get_value("crop_h")
+            # Scale crop rectangle according to zoom factor
+            drawn_crop_x = new_x + crop_x * self.zoom
+            drawn_crop_y = new_y + crop_y * self.zoom
+            drawn_crop_w = crop_w * self.zoom
+            drawn_crop_h = crop_h * self.zoom
+            
+            # Draw a semi-transparent rectangle for the crop area
+            dpg.draw_rectangle(pmin=[drawn_crop_x, drawn_crop_y],
+                            pmax=[drawn_crop_x + drawn_crop_w, drawn_crop_y + drawn_crop_h],
+                            color=[0,255,0,255], thickness=2, fill=[0,255,0,50],
+                            parent=self.drawlist_tag)
 
     def mouse_drag_handler(self, sender, app_data, user_data):
         """
@@ -184,7 +197,7 @@ class PreviewPanel:
         # Update the outer container size.
         dpg.configure_item(self.child_container_tag, width=new_width, height=new_height)
         # Reserve 40 pixels for the slider.
-        image_area_height = new_height - 40
+        image_area_height = new_height - 100
         if dpg.does_item_exist(self.drawlist_container_tag):
             dpg.configure_item(self.drawlist_container_tag, width=new_width, height=image_area_height)
         if dpg.does_item_exist(self.drawlist_tag):
