@@ -3,6 +3,7 @@ import dearpygui.dearpygui as dpg
 from processing.image_processor import ImageProcessor
 from processing.file_manager import load_image, save_image
 from ui.main_window import MainWindow
+import math
 
 processor = None
 main_window = None
@@ -23,7 +24,7 @@ def update_image_callback():
 
     params = main_window.get_tool_parameters()
     
-    # Actualizar parámetros de edición básicos
+    # Update basic editing parameters
     processor.exposure = params.get('exposure', 0)
     processor.illumination = params.get('illumination', 0.0)
     processor.contrast = params.get('contrast', 1.0)
@@ -35,6 +36,7 @@ def update_image_callback():
     processor.grain = params.get('grain', 0)
     processor.temperature = params.get('temperature', 0)
     
+    # Apply basic edits
     updated_image = processor.apply_all_edits()
     curves = params.get('curves', None)
     if curves:
@@ -45,18 +47,50 @@ def update_image_callback():
     flip_v = params.get('flip_vertical', False)
 
     if dpg.get_value("crop_mode"):
-        # Se rota la imagen completa para la vista previa
+        # Rotate the image, filling the empty borders
         updated_image = processor.rotate_image(updated_image, angle,
-                                            flip_horizontal=flip_h, flip_vertical=flip_v)
-        # Obtener dimensiones máximas del rectángulo inscrito
-        max_crop_w, max_crop_h = processor.get_largest_inscribed_rect_dims(angle)
-        # Actualizar los sliders de tamaño
-        dpg.configure_item("crop_w", max_value=max_crop_w)
-        dpg.configure_item("crop_h", max_value=max_crop_h)
-        dpg.configure_item("crop_x", max_value=updated_image.shape[0]//2)
-        dpg.configure_item("crop_y", max_value=updated_image.shape[1]//2)
+                                               flip_horizontal=flip_h,
+                                               flip_vertical=flip_v)
+        rotated_h, rotated_w = updated_image.shape[:2]
+        
+        # Compute maximum inscribed rectangle dimensions.
+        # Use rotatedRectWithMaxArea (expects radians) instead of get_largest_inscribed_rect_dims.
+        max_crop_w, max_crop_h = processor.rotatedRectWithMaxArea(math.radians(angle))
+        max_crop_w = int(abs(max_crop_w))
+        max_crop_h = int(abs(max_crop_h))
+        
+        # Compute the top-left coordinate so that the inscribed rectangle is centered.
+        center_x = rotated_w / 2
+        center_y = rotated_h / 2
+        inscribed_x = int(center_x - max_crop_w / 2)
+        inscribed_y = int(center_y - max_crop_h / 2)
+        
+        # Get current crop slider values
+        current_crop_w = dpg.get_value("crop_w")
+        current_crop_h = dpg.get_value("crop_h")
+        
+        # If the crop size is too big (or not yet set), update them to the new maximum and center the crop
+        if current_crop_w > max_crop_w or current_crop_h > max_crop_h or current_crop_w == 0 or current_crop_h == 0:
+            current_crop_w = max_crop_w
+            current_crop_h = max_crop_h
+            dpg.set_value("crop_w", max_crop_w)
+            dpg.set_value("crop_h", max_crop_h)
+            dpg.set_value("crop_x", inscribed_x)
+            dpg.set_value("crop_y", inscribed_y)
+        else:
+            # Otherwise, adjust the x and y sliders so the crop rectangle remains inside the inscribed region.
+            dpg.configure_item("crop_x", enabled=True,
+                               min_value=inscribed_x,
+                               max_value=inscribed_x + max_crop_w - current_crop_w)
+            dpg.configure_item("crop_y", enabled=True,
+                               min_value=inscribed_y,
+                               max_value=inscribed_y + max_crop_h - current_crop_h)
+        
+        # Update the slider limits for width and height
+        dpg.configure_item("crop_w", min_value=1, max_value=max_crop_w)
+        dpg.configure_item("crop_h", min_value=1, max_value=max_crop_h)
     else:
-        # Cuando se aplica el recorte (crop_mode inactivo), se usa el grid para recortar la imagen final
+        # When crop_mode is off, apply the final crop-rotate-flip operation.
         updated_image = processor.crop_rotate_flip(
             updated_image,
             params.get('crop_rect'),
@@ -64,12 +98,10 @@ def update_image_callback():
             flip_horizontal=flip_h,
             flip_vertical=flip_v
         )
-        # Se puede ocultar el grid
         dpg.set_value("crop_mode", False)
         dpg.configure_item("crop_panel", show=False)
     
     main_window.update_preview(updated_image, reset_offset=False)
-
 
 def load_image_callback():
     """Abre el diálogo para que el usuario seleccione una imagen."""
