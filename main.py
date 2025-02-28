@@ -148,6 +148,8 @@ def main():
         dpg.add_file_extension(".jpeg")
         dpg.add_file_extension(".tif")
         dpg.add_file_extension(".bmp")
+        dpg.add_file_extension(".ARW")
+        dpg.add_file_extension(".RAW")
 
     with dpg.file_dialog(directory_selector=False, show=False, callback=file_save_callback, tag="file_dialog_save"):
         dpg.add_file_extension(".png")
@@ -155,6 +157,8 @@ def main():
         dpg.add_file_extension(".jpeg")
         dpg.add_file_extension(".tif")
         dpg.add_file_extension(".bmp")
+        dpg.add_file_extension(".ARW")
+        dpg.add_file_extension(".RAW")
 
     dpg.show_viewport()
     dpg.start_dearpygui()
