@@ -33,11 +33,24 @@ class CropRotateUI:
     def update_image(self, sender, app_data, user_data):
         panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
         if panel_w <= 0 or panel_h <= 0:
-            panel_w, panel_h = self.texture_w, self.texture_h
+            panel_w, panel_h = dpg.get_viewport_client_width(), dpg.get_viewport_client_he()
 
         # Obtener ángulo y estado de crop_mode
         angle = dpg.get_value(self.rotation_slider)
         crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
+
+        plot_aspect = panel_w / panel_h
+        texture_aspect = self.texture_w / self.texture_h
+        if plot_aspect > texture_aspect:
+            x_min, x_max = 0, self.texture_h * plot_aspect
+            y_min, y_max = 0, self.texture_h
+        else:
+            x_min, x_max = 0, self.texture_w
+            y_min, y_max = 0, self.texture_w / plot_aspect
+
+        # Actualizar los ejes siempre, sin importar el modo
+        dpg.set_axis_limits("x_axis", x_min, x_max)
+        dpg.set_axis_limits("y_axis", y_min, y_max)
 
         if crop_mode:
             # Modo edición: mostrar imagen rotada completa con rectángulo
@@ -74,18 +87,6 @@ class CropRotateUI:
             if not self.user_rect or (not self.drag_active and self.prev_angle != angle):
                 self.user_rect = self.max_rect.copy()
             self.prev_angle = angle
-
-            # Ajustar límites de ejes para la imagen completa
-            plot_aspect = panel_w / panel_h
-            texture_aspect = self.texture_w / self.texture_h
-            if plot_aspect > texture_aspect:
-                x_min, x_max = 0, self.texture_h * plot_aspect
-                y_min, y_max = 0, self.texture_h
-            else:
-                x_min, x_max = 0, self.texture_w
-                y_min, y_max = 0, self.texture_w / plot_aspect
-            dpg.set_axis_limits("x_axis", x_min, x_max)
-            dpg.set_axis_limits("y_axis", y_min, y_max)
 
             self.update_rectangle_overlay()
         else:
@@ -127,6 +128,23 @@ class CropRotateUI:
                 else:
                     with dpg.texture_registry():
                         dpg.add_dynamic_texture(self.texture_w, self.texture_h, texture_data, tag=self.texture_tag, format=dpg.mvFormat_Float_rgba)
+            self.update_axis_limits()
+
+    def update_axis_limits(self):
+        panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
+        if panel_w <= 0 or panel_h <= 0:
+            panel_w, panel_h = self.texture_w, self.texture_h
+        plot_aspect = panel_w / panel_h
+        texture_aspect = self.texture_w / self.texture_h
+        if plot_aspect > texture_aspect:
+            x_min, x_max = 0, self.texture_h * plot_aspect
+            y_min, y_max = 0, self.texture_h
+        else:
+            x_min, x_max = 0, self.texture_w
+            y_min, y_max = 0, self.texture_w / plot_aspect
+        dpg.set_axis_limits("x_axis", x_min, x_max)
+        dpg.set_axis_limits("y_axis", y_min, y_max)
+
 
     def update_rectangle_overlay(self):
         import time
