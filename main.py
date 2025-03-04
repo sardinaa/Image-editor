@@ -3,27 +3,29 @@ import dearpygui.dearpygui as dpg
 from processing.image_processor import ImageProcessor
 from processing.file_manager import load_image, save_image
 from ui.main_window import MainWindow
+from ui.crop_rotate import CropRotateUI
+import numpy as np
+import cv2
 
 processor = None
 main_window = None
+crop_rotate_ui = None
 last_update_time = 0
-UPDATE_THRESHOLD = 0.1  # segundos
+UPDATE_THRESHOLD = 0.1
 updated_image = None
-current_image_path = None  # Ruta de la imagen cargada actualmente
+current_image_path = None
 
 def update_image_callback():
-    global last_update_time, updated_image
+    global last_update_time, updated_image, processor, crop_rotate_ui
     current_time = time.time()
     if current_time - last_update_time < UPDATE_THRESHOLD:
         return
     last_update_time = current_time
 
-    if processor is None:
+    if processor is None or crop_rotate_ui is None:
         return
 
     params = main_window.get_tool_parameters()
-    
-    # Actualizar parámetros de edición básicos
     processor.exposure = params.get('exposure', 0)
     processor.illumination = params.get('illumination', 0.0)
     processor.contrast = params.get('contrast', 1.0)
@@ -40,108 +42,75 @@ def update_image_callback():
     if curves:
         updated_image = processor.apply_rgb_curves(updated_image, curves)
     
-    angle = params.get('rotate_angle', 0)
-    flip_h = params.get('flip_horizontal', False)
-    flip_v = params.get('flip_vertical', False)
-
-    if dpg.get_value("crop_mode"):
-        # Se rota la imagen completa para la vista previa
-        updated_image = processor.rotate_image(updated_image, angle,
-                                            flip_horizontal=flip_h, flip_vertical=flip_v)
-        # Obtener dimensiones máximas del rectángulo inscrito
-        max_crop_w, max_crop_h = processor.get_largest_inscribed_rect_dims(angle)
-        # Actualizar los sliders de tamaño
-        dpg.configure_item("crop_w", max_value=max_crop_w)
-        dpg.configure_item("crop_h", max_value=max_crop_h)
-        dpg.configure_item("crop_x", max_value=updated_image.shape[0]//2)
-        dpg.configure_item("crop_y", max_value=updated_image.shape[1]//2)
-    else:
-        # Cuando se aplica el recorte (crop_mode inactivo), se usa el grid para recortar la imagen final
-        updated_image = processor.crop_rotate_flip(
-            updated_image,
-            params.get('crop_rect'),
-            angle,
-            flip_horizontal=flip_h,
-            flip_vertical=flip_v
-        )
-        # Se puede ocultar el grid
-        dpg.set_value("crop_mode", False)
-        dpg.configure_item("crop_panel", show=False)
-    
-    main_window.update_preview(updated_image, reset_offset=False)
-
+    crop_rotate_ui.original_image = updated_image
+    crop_rotate_ui.update_image(None, None, None)
 
 def load_image_callback():
-    """Abre el diálogo para que el usuario seleccione una imagen."""
     dpg.show_item("file_dialog_load")
 
 def file_load_callback(sender, app_data, user_data):
-    """Carga la imagen seleccionada por el usuario."""
-    global processor, current_image_path
-
-    file_path = app_data["file_path_name"]  # Ruta del archivo seleccionado
-
+    global processor, crop_rotate_ui, current_image_path
+    file_path = app_data["file_path_name"]
     if not file_path:
         print("No se seleccionó ningún archivo.")
         return
-
     try:
         new_image = load_image(file_path)
     except Exception as e:
         print("Error al cargar la imagen:", e)
         return
 
-    current_image_path = file_path  # Se guarda la ruta de la imagen cargada
-    processor = ImageProcessor(new_image.copy())  # Se inicializa el procesador
-
-    h, w = new_image.shape[:2]
-
-    # Actualiza los sliders de recorte para que se ajusten a las dimensiones de la imagen
-    dpg.set_value("crop_x", 0)
-    dpg.set_value("crop_y", 0)
-    dpg.set_value("crop_w", w)
-    dpg.set_value("crop_h", h)
-    dpg.configure_item("crop_w", max_value=w)
-    dpg.configure_item("crop_h", max_value=h)
-
-    # Actualiza la vista previa con la nueva imagen
-    main_window.update_preview(new_image, reset_offset=True)
+    current_image_path = file_path
+    processor = ImageProcessor(new_image.copy())
+    crop_rotate_ui = CropRotateUI(new_image, processor)
+    with dpg.texture_registry():
+        gray_background = np.full((crop_rotate_ui.texture_h, crop_rotate_ui.texture_w, 4), 
+                                 [100, 100, 100, 255], dtype=np.uint8)
+        offset_x = (crop_rotate_ui.texture_w - crop_rotate_ui.orig_w) // 2
+        offset_y = (crop_rotate_ui.texture_h - crop_rotate_ui.orig_h) // 2
+        if new_image.shape[2] == 3:
+            new_image_rgba = cv2.cvtColor(new_image, cv2.COLOR_RGB2RGBA)
+        else:
+            new_image_rgba = new_image
+        gray_background[offset_y:offset_y + crop_rotate_ui.orig_h, 
+                        offset_x:offset_x + crop_rotate_ui.orig_w] = new_image_rgba
+        dpg.add_raw_texture(crop_rotate_ui.texture_w, crop_rotate_ui.texture_h,
+                           gray_background.flatten() / 255.0,
+                           format=dpg.mvFormat_Float_rgba,
+                           tag=crop_rotate_ui.texture_tag)
+    
+    main_window.set_crop_rotate_ui(crop_rotate_ui)
 
 def save_image_callback():
-    """Abre el diálogo para guardar la imagen."""
     dpg.show_item("file_dialog_save")
 
 def file_save_callback(sender, app_data, user_data):
-    """Guarda la imagen procesada en la ruta especificada por el usuario."""
-    global processor
+    global processor, crop_rotate_ui
     file_path = app_data["file_path_name"]
-
-    if not processor or processor.current is None:
+    if not processor or not crop_rotate_ui:
         print("No hay imagen para guardar.")
         return
-
+    angle = dpg.get_value("rotation_slider")
+    offset_x = (crop_rotate_ui.texture_w - crop_rotate_ui.orig_w) // 2
+    offset_y = (crop_rotate_ui.texture_h - crop_rotate_ui.orig_h) // 2
+    rx, ry, rw, rh = map(int, (crop_rotate_ui.user_rect["x"] - offset_x, 
+                               crop_rotate_ui.user_rect["y"] - offset_y, 
+                               crop_rotate_ui.user_rect["w"], crop_rotate_ui.user_rect["h"]))
+    cropped = processor.crop_rotate_flip(processor.current, (rx, ry, rw, rh), angle)
     try:
-        save_image(file_path, processor.current)
+        save_image(file_path, cropped)
     except Exception as e:
         print("Error al guardar la imagen:", e)
 
 def main():
-    global processor, main_window
-
+    global main_window
     dpg.create_context()
     dpg.create_viewport(title='Photo Editor', width=1200, height=800)
     dpg.setup_dearpygui()
 
-    # Inicializa la interfaz sin imagen (el usuario debe cargar una)
-    main_window = MainWindow(
-        None,  # Sin imagen por defecto
-        update_callback=update_image_callback,
-        load_callback=load_image_callback,
-        save_callback=save_image_callback
-    )
+    main_window = MainWindow(None, update_image_callback, load_image_callback, save_image_callback)
     main_window.setup()
 
-    # Diálogos de archivo para cargar y guardar imágenes
     with dpg.file_dialog(directory_selector=False, show=False, callback=file_load_callback, tag="file_dialog_load"):
         dpg.add_file_extension(".png")
         dpg.add_file_extension(".jpg")
@@ -157,8 +126,6 @@ def main():
         dpg.add_file_extension(".jpeg")
         dpg.add_file_extension(".tif")
         dpg.add_file_extension(".bmp")
-        dpg.add_file_extension(".ARW")
-        dpg.add_file_extension(".RAW")
 
     dpg.show_viewport()
     dpg.start_dearpygui()

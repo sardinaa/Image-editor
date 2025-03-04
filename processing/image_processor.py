@@ -172,102 +172,59 @@ class ImageProcessor:
         lut = np.interp(np.arange(256), xs, ys)
         return lut.astype(np.uint8)
    
-    def rotate_image(self, image, angle=None, flip_horizontal=False, flip_vertical=False):
-        """
-        Rota la imagen (aplicando flip si se indica) y devuelve el canvas completo,
-        de modo que se vea la imagen entera (con áreas vacías).
-        """
-        if flip_horizontal:
-            image = cv2.flip(image, 1)
-        if flip_vertical:
-            image = cv2.flip(image, 0)
-        if angle:
-            (h, w) = image.shape[:2]
-            center = (w / 2, h / 2)
-            M = cv2.getRotationMatrix2D(center, angle, 1.0)
-            cos = abs(M[0, 0])
-            sin = abs(M[0, 1])
-            nW = int((h * sin) + (w * cos))
-            nH = int((h * cos) + (w * sin))
-            M[0, 2] += (nW / 2) - center[0]
-            M[1, 2] += (nH / 2) - center[1]
-            rotated = cv2.warpAffine(image, M, (nW, nH), flags=cv2.INTER_LINEAR,
-                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-            return rotated
-        return image
+    def rotate_image(self, image, angle, scale=1.0):
+        """Rota la imagen completa y devuelve el canvas ajustado."""
+        (h, w) = image.shape[:2]
+        center = (w / 2, h / 2)
+        M = cv2.getRotationMatrix2D(center, angle, scale)
+        cos = abs(M[0, 0])
+        sin = abs(M[0, 1])
+        
+        # Asegurarnos de que las dimensiones sean enteros válidos
+        nW = int((h * sin + w * cos) * scale + 0.5)  # +0.5 para redondeo adecuado
+        nH = int((h * cos + w * sin) * scale + 0.5)
+        
+        # Ajustar la matriz de rotación para el nuevo tamaño
+        M[0, 2] += (nW / 2) - center[0]
+        M[1, 2] += (nH / 2) - center[1]
+        
+        # Verificar que nW y nH sean positivos
+        if nW <= 0 or nH <= 0:
+            raise ValueError("Las dimensiones calculadas para la imagen rotada no son válidas.")
+    
+        return cv2.warpAffine(image, M, (nW, nH), flags=cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_CONSTANT, borderValue=(100, 100, 100, 255))
+    
+    def get_largest_inscribed_rect_dims(self, angle):
+        """Calcula las dimensiones del rectángulo máximo inscrito tras rotación."""
+        w, h = self.original.shape[1], self.original.shape[0]
+        if w <= 0 or h <= 0:
+            return 0, 0
+        angle = abs(angle) % np.pi
+        if angle > np.pi / 2:
+            angle = np.pi - angle
+        sin_a = np.sin(angle)
+        cos_a = np.cos(angle)
+        width_is_longer = w >= h
+        long_side = w if width_is_longer else h
+        short_side = h if width_is_longer else w
+        if short_side <= 2 * sin_a * cos_a * long_side:
+            x = 0.5 * short_side
+            wr = x / sin_a if width_is_longer else x / cos_a
+            hr = x / cos_a if width_is_longer else x / sin_a
+        else:
+            cos_2a = cos_a * cos_a - sin_a * sin_a
+            wr = (w * cos_a - h * sin_a) / cos_2a
+            hr = (h * cos_a - w * sin_a) / cos_2a
+        return int(wr), int(hr)
 
     def crop_rotate_flip(self, image, crop_rect, angle, flip_horizontal=False, flip_vertical=False):
-        """
-        Aplica flip, rota la imagen y luego recorta el área final sin áreas vacías,
-        usando el grid (crop_rect) definido por el usuario.
-        """
+        """Aplica rotación y recorte en una sola operación."""
+        rotated = self.rotate_image(image, angle)
         x, y, w, h = crop_rect
-        cropped = image[y:y+h, x:x+w]
-        (h_img, w_img) = cropped.shape[:2]
-        center = (w_img / 2, h_img / 2)
-        M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        rotated = cv2.warpAffine(cropped, M, (w_img, h_img),
-                                 flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        cropped = rotated[y:y+h, x:x+w]
         if flip_horizontal:
-            rotated = cv2.flip(rotated, 1)
+            cropped = cv2.flip(cropped, 1)
         if flip_vertical:
-            rotated = cv2.flip(rotated, 0)
-        return rotated
-
-    def get_largest_inscribed_rect_dims(self, angle):
-        # Se usan las dimensiones de la imagen original
-        W = self.original.shape[1]
-        H = self.original.shape[0]
-        # Normalizar el ángulo a [0, 90]
-        angle = abs(angle) % 180
-        if angle > 90:
-            angle = 180 - angle
-        angle_rad = math.radians(angle)
-        if W <= 0 or H <= 0:
-            return 0, 0
-        cos_a = math.cos(angle_rad)
-        sin_a = math.sin(angle_rad)
-        # Fórmula basada en https://stackoverflow.com/a/16778797
-        if H <= 2 * sin_a * cos_a * W:
-            max_w, max_h = W, H
-        else:
-            max_w = (W * cos_a - H * sin_a) / (cos_a**2 - sin_a**2)
-            max_h = (H * cos_a - W * sin_a) / (cos_a**2 - sin_a**2)
-        return int(abs(max_w)), int(abs(max_h))
-    
-    def rotatedRectWithMaxArea(self, angle):
-        """
-        Given a rectangle of size wxh that has been rotated by 'angle' (in
-        radians), computes the width and height of the largest possible
-        axis-aligned rectangle (maximal area) within the rotated rectangle.
-        """
-        w = self.original.shape[1]
-        h = self.original.shape[0]
-        if w <= 0 or h <= 0:
-            return 0,0
-
-        width_is_longer = w >= h
-        side_long, side_short = (w,h) if width_is_longer else (h,w)
-
-        # since the solutions for angle, -angle and 180-angle are all the same,
-        # if suffices to look at the first quadrant and the absolute values of sin,cos:
-        sin_a, cos_a = abs(math.sin(angle)), abs(math.cos(angle))
-        if side_short <= 2.*sin_a*cos_a*side_long or abs(sin_a-cos_a) < 1e-10:
-            # half constrained case: two crop corners touch the longer side,
-            #   the other two corners are on the mid-line parallel to the longer line
-            x = 0.5*side_short
-            wr,hr = (x/sin_a,x/cos_a) if width_is_longer else (x/cos_a,x/sin_a)
-        else:
-            # fully constrained case: crop touches all 4 sides
-            cos_2a = cos_a*cos_a - sin_a*sin_a
-            wr,hr = (w*cos_a - h*sin_a)/cos_2a, (h*cos_a - w*sin_a)/cos_2a
-
-        return wr,hr
-
-    def apply_final_crop(self, image, crop_rect):
-        """
-        Extracts a final crop from the image.
-        crop_rect: (x, y, width, height) in the coordinate system of the rotated image.
-        """
-        x, y, w, h = crop_rect
-        return image[y:y+h, x:x+w]
+            cropped = cv2.flip(cropped, 0)
+        return cropped
