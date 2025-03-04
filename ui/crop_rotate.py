@@ -83,7 +83,7 @@ class CropRotateUI:
                 y_min, y_max = 0, self.texture_h
             else:
                 x_min, x_max = 0, self.texture_w
-                y_min, y_max = self.texture_w / plot_aspect
+                y_min, y_max = 0, self.texture_w / plot_aspect
             dpg.set_axis_limits("x_axis", x_min, x_max)
             dpg.set_axis_limits("y_axis", y_min, y_max)
 
@@ -92,10 +92,8 @@ class CropRotateUI:
             # Modo resultado: mostrar solo la imagen recortada y rotada
             if self.user_rect:
                 # Ajustar coordenadas del rectángulo al espacio de la imagen original
-                offset_x_orig = (self.texture_w - self.orig_w) // 2
-                offset_y_orig = (self.texture_h - self.orig_h) // 2
-                crop_x = max(0, self.user_rect["x"] - offset_x_orig)
-                crop_y = max(0, self.user_rect["y"] - offset_y_orig)
+                crop_x = self.user_rect["x"]
+                crop_y = self.user_rect["y"]
                 crop_w = self.user_rect["w"]
                 crop_h = self.user_rect["h"]
 
@@ -105,28 +103,30 @@ class CropRotateUI:
                     (crop_x, crop_y, crop_w, crop_h),
                     angle
                 )
+                cv2.imwrite("Cropped.png", cropped_image)
 
-                # Asegurarse de que sea RGBA
                 if cropped_image.shape[2] == 3:
-                    cropped_image = cv2.cvtColor(cropped_image, cv2.COLOR_RGB2RGBA)
+                    cropped_image_rgba = cv2.cvtColor(cropped_image, cv2.COLOR_RGB2RGBA)
+                else:
+                    cropped_image_rgba = cropped_image
 
-                # Actualizar dimensiones de la textura al tamaño recortado
-                self.texture_w, self.texture_h = cropped_image.shape[1], cropped_image.shape[0]
-                self.rotated_texture = cropped_image.copy()
-
-                # Actualizar límites de los ejes para la imagen recortada
-                dpg.set_axis_limits("x_axis", 0, self.texture_w)
-                dpg.set_axis_limits("y_axis", 0, self.texture_h)
-
-                # Actualizar la textura sin rectángulo
-                texture_data = self.rotated_texture.flatten().astype(np.float32) / 255.0
+                # Crear un fondo gris
+                gray_background = np.full((self.texture_h, self.texture_w, 4), [100, 100, 100, 255], dtype=np.uint8)
+                
+                # Calcular el offset para centrar la imagen recortada
+                offset_x = (self.texture_w - cropped_image.shape[1]) // 2
+                offset_y = (self.texture_h - cropped_image.shape[0]) // 2
+                
+                # Insertar la imagen recortada en el fondo gris
+                gray_background[offset_y:offset_y + cropped_image.shape[0], offset_x:offset_x + cropped_image.shape[1]] = cropped_image_rgba
+                
+                # Actualizar la textura
+                texture_data = gray_background.flatten().astype(np.float32) / 255.0
                 if dpg.does_item_exist(self.texture_tag):
-                    dpg.configure_item(self.texture_tag, width=self.texture_w, height=self.texture_h)
                     dpg.set_value(self.texture_tag, texture_data)
                 else:
                     with dpg.texture_registry():
-                        dpg.add_dynamic_texture(self.texture_w, self.texture_h, texture_data,
-                                               tag=self.texture_tag, format=dpg.mvFormat_Float_rgba)
+                        dpg.add_dynamic_texture(self.texture_w, self.texture_h, texture_data, tag=self.texture_tag, format=dpg.mvFormat_Float_rgba)
 
     def update_rectangle_overlay(self):
         import time
@@ -155,79 +155,85 @@ class CropRotateUI:
         dpg.set_value(self.texture_tag, texture_data)
 
     def on_mouse_down(self, sender, app_data):
-        if not self.user_rect:
-            return
-        self.drag_active = False
-        mouse_pos = dpg.get_mouse_pos()
-        panel_pos = dpg.get_item_pos("Central Panel")
-        panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
-        mouse_x = (mouse_pos[0] - panel_pos[0]) / panel_w * self.texture_w
-        mouse_y = (mouse_pos[1] - panel_pos[1]) / panel_h * self.texture_h
+        crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
+        if crop_mode:
+            if not self.user_rect:
+                return
+            self.drag_active = False
+            mouse_pos = dpg.get_mouse_pos()
+            panel_pos = dpg.get_item_pos("Central Panel")
+            panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
+            mouse_x = (mouse_pos[0] - panel_pos[0]) / panel_w * self.texture_w
+            mouse_y = (mouse_pos[1] - panel_pos[1]) / panel_h * self.texture_h
 
-        inside_rect = self.point_in_rect(mouse_x, mouse_y, self.user_rect)
-        if inside_rect:
-            self.drag_active = True
-            self.drag_mode = "move"
-            self.drag_offset = (mouse_x - self.user_rect["x"], mouse_y - self.user_rect["y"])
-            self.drag_start_rect = self.user_rect.copy()
-        else:
-            handle = self.hit_test_handles(mouse_x, mouse_y, self.user_rect)
-            if handle:
+            inside_rect = self.point_in_rect(mouse_x, mouse_y, self.user_rect)
+            if inside_rect:
                 self.drag_active = True
-                self.drag_mode = "resize"
-                self.drag_handle = handle
-                self.drag_start_mouse = (mouse_x, mouse_y)
+                self.drag_mode = "move"
+                self.drag_offset = (mouse_x - self.user_rect["x"], mouse_y - self.user_rect["y"])
                 self.drag_start_rect = self.user_rect.copy()
+            else:
+                handle = self.hit_test_handles(mouse_x, mouse_y, self.user_rect)
+                if handle:
+                    self.drag_active = True
+                    self.drag_mode = "resize"
+                    self.drag_handle = handle
+                    self.drag_start_mouse = (mouse_x, mouse_y)
+                    self.drag_start_rect = self.user_rect.copy()
 
     def on_mouse_drag(self, sender, app_data):
-        if not self.drag_active:
-            return
-        mouse_pos = dpg.get_mouse_pos()
-        panel_pos = dpg.get_item_pos("Central Panel")
-        panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
-        mouse_x = (mouse_pos[0] - panel_pos[0]) / panel_w * self.texture_w
-        mouse_y = (mouse_pos[1] - panel_pos[1]) / panel_h * self.texture_h
+        crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
+        if crop_mode:
+            if not self.drag_active:
+                return
+            mouse_pos = dpg.get_mouse_pos()
+            panel_pos = dpg.get_item_pos("Central Panel")
+            panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
+            mouse_x = (mouse_pos[0] - panel_pos[0]) / panel_w * self.texture_w
+            mouse_y = (mouse_pos[1] - panel_pos[1]) / panel_h * self.texture_h
 
-        if self.drag_mode == "move":
-            delta_x = mouse_x - self.drag_start_rect["x"] - self.drag_offset[0]
-            delta_y = mouse_y - self.drag_start_rect["y"] - self.drag_offset[1]
-            new_x = self.drag_start_rect["x"] + delta_x
-            new_y = self.drag_start_rect["y"] + delta_y
-            new_x = max(self.max_rect["x"], min(new_x, self.max_rect["x"] + self.max_rect["w"] - self.user_rect["w"]))
-            new_y = max(self.max_rect["y"], min(new_y, self.max_rect["y"] + self.max_rect["h"] - self.user_rect["h"]))
-            self.user_rect["x"], self.user_rect["y"] = new_x, new_y
-        elif self.drag_mode == "resize":
-            dx = mouse_x - self.drag_start_mouse[0]
-            dy = mouse_y - self.drag_start_mouse[1]
-            new_rect = self.drag_start_rect.copy()
-            fixed_corner = None
-            if self.drag_handle == "tl":
-                new_rect["x"] += dx; new_rect["y"] += dy
-                new_rect["w"] -= dx; new_rect["h"] -= dy
-                fixed_corner = (self.drag_start_rect["x"] + self.drag_start_rect["w"], 
-                                self.drag_start_rect["y"] + self.drag_start_rect["h"])
-            elif self.drag_handle == "tr":
-                new_rect["y"] += dy; new_rect["w"] += dx; new_rect["h"] -= dy
-                fixed_corner = (self.drag_start_rect["x"], self.drag_start_rect["y"] + self.drag_start_rect["h"])
-            elif self.drag_handle == "bl":
-                new_rect["x"] += dx; new_rect["w"] -= dx; new_rect["h"] += dy
-                fixed_corner = (self.drag_start_rect["x"] + self.drag_start_rect["w"], self.drag_start_rect["y"])
-            elif self.drag_handle == "br":
-                new_rect["w"] += dx; new_rect["h"] += dy
-                fixed_corner = (self.drag_start_rect["x"], self.drag_start_rect["y"])
+            if self.drag_mode == "move":
+                delta_x = mouse_x - self.drag_start_rect["x"] - self.drag_offset[0]
+                delta_y = mouse_y - self.drag_start_rect["y"] - self.drag_offset[1]
+                new_x = self.drag_start_rect["x"] + delta_x
+                new_y = self.drag_start_rect["y"] + delta_y
+                new_x = max(self.max_rect["x"], min(new_x, self.max_rect["x"] + self.max_rect["w"] - self.user_rect["w"]))
+                new_y = max(self.max_rect["y"], min(new_y, self.max_rect["y"] + self.max_rect["h"] - self.user_rect["h"]))
+                self.user_rect["x"], self.user_rect["y"] = new_x, new_y
+            elif self.drag_mode == "resize":
+                dx = mouse_x - self.drag_start_mouse[0]
+                dy = mouse_y - self.drag_start_mouse[1]
+                new_rect = self.drag_start_rect.copy()
+                fixed_corner = None
+                if self.drag_handle == "tl":
+                    new_rect["x"] += dx; new_rect["y"] += dy
+                    new_rect["w"] -= dx; new_rect["h"] -= dy
+                    fixed_corner = (self.drag_start_rect["x"] + self.drag_start_rect["w"], 
+                                    self.drag_start_rect["y"] + self.drag_start_rect["h"])
+                elif self.drag_handle == "tr":
+                    new_rect["y"] += dy; new_rect["w"] += dx; new_rect["h"] -= dy
+                    fixed_corner = (self.drag_start_rect["x"], self.drag_start_rect["y"] + self.drag_start_rect["h"])
+                elif self.drag_handle == "bl":
+                    new_rect["x"] += dx; new_rect["w"] -= dx; new_rect["h"] += dy
+                    fixed_corner = (self.drag_start_rect["x"] + self.drag_start_rect["w"], self.drag_start_rect["y"])
+                elif self.drag_handle == "br":
+                    new_rect["w"] += dx; new_rect["h"] += dy
+                    fixed_corner = (self.drag_start_rect["x"], self.drag_start_rect["y"])
 
-            min_size = 20
-            if new_rect["w"] < min_size: new_rect["w"] = min_size
-            if new_rect["h"] < min_size: new_rect["h"] = min_size
-            self.user_rect = self.clamp_rect(new_rect, self.max_rect, self.max_area, self.drag_handle, fixed_corner)
+                min_size = 20
+                if new_rect["w"] < min_size: new_rect["w"] = min_size
+                if new_rect["h"] < min_size: new_rect["h"] = min_size
+                self.user_rect = self.clamp_rect(new_rect, self.max_rect, self.max_area, self.drag_handle, fixed_corner)
 
-        self.update_rectangle_overlay()
+            self.update_rectangle_overlay()
 
     def on_mouse_release(self, sender, app_data):
-        self.drag_active = False
-        self.drag_mode = None
-        self.drag_handle = None
-        self.update_rectangle_overlay()
+        crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
+        if crop_mode:
+            self.drag_active = False
+            self.drag_mode = None
+            self.drag_handle = None
+            self.update_rectangle_overlay()
 
     def clamp_rect(self, rect, max_rect, max_area, handle=None, fixed_corner=None):
         if rect["x"] < max_rect["x"]: rect["x"] = max_rect["x"]
@@ -276,12 +282,30 @@ class CropRotateUI:
         angle = dpg.get_value(self.rotation_slider)
         rx, ry, rw, rh = map(int, (self.user_rect["x"], self.user_rect["y"], 
                                    self.user_rect["w"], self.user_rect["h"]))
-        # Ajustar coordenadas al espacio de la imagen original
+        # Adjust coordinates to the original image space
         offset_x = (self.texture_w - self.orig_w) // 2
         offset_y = (self.texture_h - self.orig_h) // 2
-        crop_rect = (rx - offset_x, ry - offset_y, rw, rh)
+        crop_rect = (
+            max(0, rx - offset_x),
+            max(0, ry - offset_y),
+            min(rw, self.orig_w - max(0, rx - offset_x)),
+            min(rh, self.orig_h - max(0, ry - offset_y))
+        )
+        # Apply rotation and crop
         cropped = self.image_processor.crop_rotate_flip(self.original_image, crop_rect, angle)
-        # Mostrar imagen recortada en una ventana
+        # Ensure the aspect ratio is maintained
+        aspect_ratio = self.orig_w / self.orig_h
+        cropped_h, cropped_w = cropped.shape[:2]
+        if cropped_w / cropped_h != aspect_ratio:
+            if cropped_w / cropped_h > aspect_ratio:
+                new_w = int(cropped_h * aspect_ratio)
+                offset = (cropped_w - new_w) // 2
+                cropped = cropped[:, offset:offset + new_w]
+            else:
+                new_h = int(cropped_w / aspect_ratio)
+                offset = (cropped_h - new_h) // 2
+                cropped = cropped[offset:offset + new_h, :]
+        # Show cropped image in a window
         height, width = cropped.shape[:2]
         cropped_flat = cropped.flatten() / 255.0
         if dpg.does_item_exist("cropped_texture"):
@@ -289,6 +313,3 @@ class CropRotateUI:
         else:
             with dpg.texture_registry():
                 dpg.add_dynamic_texture(width, height, cropped_flat, tag="cropped_texture")
-        if not dpg.does_item_exist("CroppedWindow"):
-            with dpg.window(label="Cropped Image", tag="CroppedWindow"):
-                dpg.add_image("cropped_texture")

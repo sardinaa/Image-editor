@@ -21,3 +21,7 @@ processing/__pycache__/image_processor.cpython-312.pyc
 ui/__pycache__/crop_rotate.cpython-312.pyc
 ui/__pycache__/main_window.cpython-312.pyc
 ui/__pycache__/tool_panel.cpython-312.pyc
+processing/__pycache__/file_manager.cpython-312.pyc
+processing/__pycache__/image_processor.cpython-312.pyc
+ui/__pycache__/main_window.cpython-312.pyc
+ui/__pycache__/tool_panel.cpython-312.pyc

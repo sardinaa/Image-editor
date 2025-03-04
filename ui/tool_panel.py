@@ -33,7 +33,7 @@ class ToolPanel:
                 dpg.add_slider_float(label="Ángulo de Rotación", tag="rotation_slider",
                                     min_value=0, max_value=360, default_value=0, callback=self._update_crop_rotate)
                 dpg.add_button(label="Máxima Área", callback=self._set_max_rect)
-                dpg.add_button(label="Crop", callback=self._crop_image)
+                # dpg.add_button(label="Crop", callback=self._crop_image)  # Remove this line
             
             dpg.add_separator()
             dpg.add_button(label="Load Image", callback=self._load_image)
@@ -46,6 +46,8 @@ class ToolPanel:
     def toggle_crop_mode(self, sender, app_data, user_data):
         current = dpg.get_value("crop_mode")
         dpg.configure_item("crop_panel", show=current)
+        if not current:  # Apply crop when checkbox is unchecked
+            self._crop_image(sender, app_data, user_data)
         self._param_changed(sender, app_data, user_data)
 
     def _update_crop_rotate(self, sender, app_data, user_data):

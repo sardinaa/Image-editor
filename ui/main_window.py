@@ -24,10 +24,7 @@ class MainWindow:
             with dpg.group(horizontal=True):
                 # Crear el Central Panel con su contenido desde el inicio
                 with dpg.child_window(tag=self.central_panel_tag, width=central_panel_width, height=viewport_height):
-                    with dpg.plot(label="Image Plot", no_mouse_pos=False, height=-1, width=-1):
-                        dpg.add_plot_axis(dpg.mvXAxis, label="X", no_gridlines=True, tag="x_axis")
-                        dpg.add_plot_axis(dpg.mvYAxis, label="Y", no_gridlines=True, tag="y_axis")
-                        # No añadimos image_series aquí; se hará dinámicamente en set_crop_rotate_ui
+                        pass
                 with dpg.child_window(tag=self.right_panel_tag, width=right_panel_width, height=viewport_height):
                     self.tool_panel = ToolPanel(callback=self.update_callback,
                                                 load_callback=self.load_callback,
@@ -41,7 +38,9 @@ class MainWindow:
     def create_central_panel_content(self):
         # Añadir el image_series y los manejadores cuando tengamos crop_rotate_ui
         if not dpg.does_item_exist("central_image") and self.crop_rotate_ui:
-            with dpg.plot(parent=self.central_panel_tag):  # Usar el plot existente
+            with dpg.plot(label="Image Plot", no_mouse_pos=False, height=-1, width=-1, parent=self.central_panel_tag):  # Usar el plot existente
+                dpg.add_plot_axis(dpg.mvXAxis, label="X", no_gridlines=True, tag="x_axis")
+                dpg.add_plot_axis(dpg.mvYAxis, label="Y", no_gridlines=True, tag="y_axis")
                 y_axis = dpg.get_item_children(dpg.get_item_children(self.central_panel_tag, slot=1)[0], slot=1)[1]  # Obtener y_axis
                 dpg.add_image_series(self.crop_rotate_ui.texture_tag,
                                      bounds_min=[0, 0],

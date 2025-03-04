@@ -50,7 +50,8 @@ def load_image_callback():
 
 def file_load_callback(sender, app_data, user_data):
     global processor, crop_rotate_ui, current_image_path
-    file_path = app_data["file_path_name"]
+    #file_path = app_data["file_path_name"]
+    file_path = "sample.png"
     if not file_path:
         print("No se seleccionó ningún archivo.")
         return
@@ -65,7 +66,7 @@ def file_load_callback(sender, app_data, user_data):
     crop_rotate_ui = CropRotateUI(new_image, processor)
     with dpg.texture_registry():
         gray_background = np.full((crop_rotate_ui.texture_h, crop_rotate_ui.texture_w, 4), 
-                                 [100, 100, 100, 255], dtype=np.uint8)
+                                 [100, 100, 100, 0], dtype=np.uint8)
         offset_x = (crop_rotate_ui.texture_w - crop_rotate_ui.orig_w) // 2
         offset_y = (crop_rotate_ui.texture_h - crop_rotate_ui.orig_h) // 2
         if new_image.shape[2] == 3:
@@ -74,9 +75,21 @@ def file_load_callback(sender, app_data, user_data):
             new_image_rgba = new_image
         gray_background[offset_y:offset_y + crop_rotate_ui.orig_h, 
                         offset_x:offset_x + crop_rotate_ui.orig_w] = new_image_rgba
+        
+        panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
+        if panel_w <= 0 or panel_h <= 0:
+            panel_w, panel_h = crop_rotate_ui.texture_w, crop_rotate_ui.texture_h
+        # Ajustar límites de ejes para la imagen completa
+        plot_aspect = panel_w / panel_h
+        texture_aspect = crop_rotate_ui.texture_w / crop_rotate_ui.texture_h
+        if plot_aspect > texture_aspect:
+            x_min, x_max = 0, crop_rotate_ui.texture_h * plot_aspect
+            y_min, y_max = 0, crop_rotate_ui.texture_h
+        else:
+            x_min, x_max = 0, crop_rotate_ui.texture_w
+            y_min, y_max = crop_rotate_ui.texture_w / plot_aspect, crop_rotate_ui.texture_w / plot_aspect
         dpg.add_raw_texture(crop_rotate_ui.texture_w, crop_rotate_ui.texture_h,
-                           gray_background.flatten() / 255.0,
-                           format=dpg.mvFormat_Float_rgba,
+                           gray_background.flatten().astype(np.float32) / 255.0,
                            tag=crop_rotate_ui.texture_tag)
     
     main_window.set_crop_rotate_ui(crop_rotate_ui)
@@ -110,6 +123,7 @@ def main():
 
     main_window = MainWindow(None, update_image_callback, load_image_callback, save_image_callback)
     main_window.setup()
+    file_load_callback(None, None, None)
 
     with dpg.file_dialog(directory_selector=False, show=False, callback=file_load_callback, tag="file_dialog_load"):
         dpg.add_file_extension(".png")
