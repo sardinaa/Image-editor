@@ -1,6 +1,9 @@
 import dearpygui.dearpygui as dpg
 from ui.tool_panel import ToolPanel
 from ui.crop_rotate import CropRotateUI
+from ui.segmentation import ImageSegmenter  # New import
+import cv2
+import numpy as np
 
 class MainWindow:
     def __init__(self, image, update_callback, load_callback, save_callback):
@@ -44,6 +47,8 @@ class MainWindow:
             with dpg.menu(label="Editar"):
                 dpg.add_menu_item(label="Undo", callback=lambda: print("Deshacer"))
                 dpg.add_menu_item(label="Redo", callback=lambda: print("Rehacer"))
+                # New segmentation menu option
+                dpg.add_menu_item(label="Segment", callback=self.segment_current_image)
 
     def create_central_panel_content(self):
         # Añadir el image_series y los manejadores cuando tengamos crop_rotate_ui
@@ -168,3 +173,49 @@ class MainWindow:
         if self.crop_rotate_ui:
             self.crop_rotate_ui.original_image = image
             self.crop_rotate_ui.update_image(None, None, None)
+
+    def segment_current_image(self):
+        # Segment the current image using SAM
+        if self.crop_rotate_ui and hasattr(self.crop_rotate_ui, "original_image"):
+            segmenter = ImageSegmenter()  # Alternatively, cache this instance
+            image = self.crop_rotate_ui.original_image
+            masks = segmenter.segment(image)
+            self.layer_masks = masks  # Store masks for further editing
+            self.tool_panel.update_masks(masks)
+            self.update_mask_overlays(masks)
+            print("Segmented masks:", len(masks))
+        else:
+            print("No image available for segmentation.")
+
+    def update_mask_overlays(self, masks):
+        # Remove existing mask overlays if any
+        for idx in range(len(masks)):
+            tag_series = f"mask_series_{idx}"
+            if dpg.does_item_exist(tag_series):
+                dpg.delete_item(tag_series)
+        # Define overlay colors (RGBA) for mask layers
+        colors = [(255, 0, 0, 100), (0, 255, 0, 100), (0, 0, 255, 100), (255, 255, 0, 100)]
+        w = self.crop_rotate_ui.texture_w
+        h = self.crop_rotate_ui.texture_h
+        # Get the y_axis from the central panel (where the image series is attached)
+        y_axis = dpg.get_item_children(dpg.get_item_children(self.central_panel_tag, slot=1)[0], slot=1)[1]
+        for idx, mask in enumerate(masks):
+            binary_mask = mask.get("segmentation")
+            if binary_mask is None:
+                continue
+            # Resize the binary mask to match texture dimensions if needed
+            binary_mask = cv2.resize(binary_mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
+            overlay = np.zeros((h, w, 4), dtype=np.uint8)
+            color = colors[idx % len(colors)]
+            # Create a colored overlay where mask is 1
+            for channel in range(4):
+                overlay[..., channel] = np.where(binary_mask==1, color[channel], 0)
+            texture_data = overlay.flatten().astype(np.float32) / 255.0
+            with dpg.texture_registry():
+                dpg.add_dynamic_texture(w, h, texture_data, tag=f"mask_overlay_{idx}", format=dpg.mvFormat_Float_rgba)
+            # Add an image series for this mask overlay
+            dpg.add_image_series(f"mask_overlay_{idx}",
+                                 bounds_min=[0, 0],
+                                 bounds_max=[w, h],
+                                 parent=y_axis,
+                                 tag=f"mask_series_{idx}")

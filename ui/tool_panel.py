@@ -46,6 +46,11 @@ class ToolPanel:
             self.curves_panel = CurvesPanel(callback=self._param_changed)
             self.curves_panel.curves = self.curves
             self.curves_panel.show()
+            
+            # New Masks section
+            dpg.add_separator()
+            dpg.add_text("Masks", color=[176, 204, 255])
+            dpg.add_listbox(items=[], tag="mask_list", callback=self._mask_selected, num_items=4)
 
     def _param_changed(self, sender, app_data, user_data):
         if self.callback:
@@ -93,3 +98,15 @@ class ToolPanel:
             'crop_mode': dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
         }
         return params
+
+    def _mask_selected(self, sender, app_data, user_data):
+        # Placeholder callback when a mask is selected from the listbox.
+        print("Selected mask:", app_data)
+        
+    def update_masks(self, masks):
+        # Create listbox entries based on the number of masks
+        items = [f"Mask {idx+1}" for idx in range(len(masks))]
+        if dpg.does_item_exist("mask_list"):
+            dpg.configure_item("mask_list", items=items)
+        else:
+            print("Mask list widget does not exist.")
