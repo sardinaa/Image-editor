@@ -11,6 +11,7 @@ class CropRotateUI:
         self.default_scale = min(self.orig_w, self.orig_h) / diagonal
         self.prev_zoom = self.default_scale
         self.prev_angle = 0
+        self.rotated_image = None
 
         self.texture_w = int(np.ceil(diagonal))
         self.texture_h = self.texture_w
@@ -33,7 +34,7 @@ class CropRotateUI:
     def update_image(self, sender, app_data, user_data):
         panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
         if panel_w <= 0 or panel_h <= 0:
-            panel_w, panel_h = dpg.get_viewport_client_width(), dpg.get_viewport_client_he()
+            panel_w, panel_h = dpg.get_item_width("Central Panel"), dpg.get_item_height("Central Panel")
 
         # Obtener ángulo y estado de crop_mode
         angle = dpg.get_value(self.rotation_slider)
@@ -56,21 +57,28 @@ class CropRotateUI:
             # Modo edición: mostrar imagen rotada completa con rectángulo
             rotated_image = self.image_processor.rotate_image(self.original_image, angle)
             rot_h, rot_w = rotated_image.shape[:2]
-            offset_x = (self.texture_w - rot_w) // 2
-            offset_y = (self.texture_h - rot_h) // 2
+            
+            # Store these offset values as they'll be needed later for proper cropping
+            self.offset_x = (self.texture_w - rot_w) // 2
+            self.offset_y = (self.texture_h - rot_h) // 2
+            
             padded_image = np.full((self.texture_h, self.texture_w, 4), [100, 100, 100, 255], dtype=np.uint8)
             
             if rotated_image.shape[2] == 3:
                 rotated_image = cv2.cvtColor(rotated_image, cv2.COLOR_RGB2RGBA)
             
-            if offset_y >= 0 and offset_x >= 0 and offset_y + rot_h <= self.texture_h and offset_x + rot_w <= self.texture_w:
-                padded_image[offset_y:offset_y + rot_h, offset_x:offset_x + rot_w] = rotated_image
+            if self.offset_y >= 0 and self.offset_x >= 0 and self.offset_y + rot_h <= self.texture_h and self.offset_x + rot_w <= self.texture_w:
+                padded_image[self.offset_y:self.offset_y + rot_h, self.offset_x:self.offset_x + rot_w] = rotated_image
             else:
                 h_slice = min(rot_h, self.texture_h)
                 w_slice = min(rot_w, self.texture_w)
                 padded_image[:h_slice, :w_slice] = rotated_image[:h_slice, :w_slice]
+                self.offset_x = 0
+                self.offset_y = 0
 
+            self.rotated_image = rotated_image.copy()
             self.rotated_texture = padded_image.copy()
+            self.rot_h, self.rot_w = rot_h, rot_w  # Store rotated dimensions
 
             # Calcular rectángulo máximo
             angle_rad = np.deg2rad(angle)
@@ -91,49 +99,56 @@ class CropRotateUI:
             self.update_rectangle_overlay()
         else:
             # Modo resultado: mostrar solo la imagen recortada y rotada
-            if self.user_rect:
-                # Ajustar coordenadas del rectángulo al espacio de la imagen original
-                crop_x = self.user_rect["x"]
-                crop_y = self.user_rect["y"]
-                crop_w = self.user_rect["w"]
-                crop_h = self.user_rect["h"]
-
-                # Aplicar rotación y recorte
-                cropped_image = self.image_processor.crop_rotate_flip(
-                    self.original_image,
-                    (crop_x, crop_y, crop_w, crop_h),
-                    angle
-                )
-                cv2.imwrite("Cropped.png", cropped_image)
-
-                if cropped_image.shape[2] == 3:
-                    cropped_image_rgba = cv2.cvtColor(cropped_image, cv2.COLOR_RGB2RGBA)
-                else:
-                    cropped_image_rgba = cropped_image
-
-                # Crear un fondo gris
-                gray_background = np.full((self.texture_h, self.texture_w, 4), [100, 100, 100, 255], dtype=np.uint8)
+            if self.user_rect and hasattr(self, 'rotated_image') and self.rotated_image is not None:
+                # Adjust rectangle coordinates relative to the rotated image, not the texture
+                rx = self.user_rect["x"] - self.offset_x
+                ry = self.user_rect["y"] - self.offset_y
+                rw = self.user_rect["w"]
+                rh = self.user_rect["h"]
                 
-                # Calcular el offset para centrar la imagen recortada
-                offset_x = (self.texture_w - cropped_image.shape[1]) // 2
-                offset_y = (self.texture_h - cropped_image.shape[0]) // 2
+                # Ensure the rectangle is within the bounds of the rotated image
+                rx = max(0, rx)
+                ry = max(0, ry)
+                rx_end = min(rx + rw, self.rot_w)
+                ry_end = min(ry + rh, self.rot_h)
+                rw = rx_end - rx
+                rh = ry_end - ry
                 
-                # Insertar la imagen recortada en el fondo gris
-                gray_background[offset_y:offset_y + cropped_image.shape[0], offset_x:offset_x + cropped_image.shape[1]] = cropped_image_rgba
-                
-                # Actualizar la textura
-                texture_data = gray_background.flatten().astype(np.float32) / 255.0
-                if dpg.does_item_exist(self.texture_tag):
-                    dpg.set_value(self.texture_tag, texture_data)
-                else:
-                    with dpg.texture_registry():
-                        dpg.add_dynamic_texture(self.texture_w, self.texture_h, texture_data, tag=self.texture_tag, format=dpg.mvFormat_Float_rgba)
-            self.update_axis_limits()
+                # Only crop if we have valid dimensions
+                if rw > 0 and rh > 0:
+                    # Apply crop directly on the rotated image (without padding)
+                    cropped_image = self.rotated_image[ry:ry+rh, rx:rx+rw].copy()
+                    
+                    if cropped_image.shape[2] == 3:
+                        cropped_image_rgba = cv2.cvtColor(cropped_image, cv2.COLOR_RGB2RGBA)
+                    else:
+                        cropped_image_rgba = cropped_image
+
+                    cv2.imwrite("crop.png", cropped_image_rgba)
+
+                    # Create background and center the cropped image
+                    gray_background = np.full((self.texture_h, self.texture_w, 4), 
+                                             [100, 100, 100, 255], dtype=np.uint8)
+                    
+                    offset_x = (self.texture_w - cropped_image.shape[1]) // 2
+                    offset_y = (self.texture_h - cropped_image.shape[0]) // 2
+                    
+                    gray_background[offset_y:offset_y + cropped_image.shape[0], 
+                                   offset_x:offset_x + cropped_image.shape[1]] = cropped_image_rgba
+                    
+                    # Update texture
+                    texture_data = gray_background.flatten().astype(np.float32) / 255.0
+                    if dpg.does_item_exist(self.texture_tag):
+                        dpg.set_value(self.texture_tag, texture_data)
+                    else:
+                        with dpg.texture_registry():
+                            dpg.add_dynamic_texture(self.texture_w, self.texture_h, texture_data, 
+                                                  tag=self.texture_tag, format=dpg.mvFormat_Float_rgba)
 
     def update_axis_limits(self):
         panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
         if panel_w <= 0 or panel_h <= 0:
-            panel_w, panel_h = self.texture_w, self.texture_h
+            panel_w, panel_h = dpg.get_item_width("Central Panel"), dpg.get_item_height("Central Panel")
         plot_aspect = panel_w / panel_h
         texture_aspect = self.texture_w / self.texture_h
         if plot_aspect > texture_aspect:
@@ -144,7 +159,6 @@ class CropRotateUI:
             y_min, y_max = 0, self.texture_w / plot_aspect
         dpg.set_axis_limits("x_axis", x_min, x_max)
         dpg.set_axis_limits("y_axis", y_min, y_max)
-
 
     def update_rectangle_overlay(self):
         import time

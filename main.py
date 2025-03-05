@@ -75,24 +75,12 @@ def file_load_callback(sender, app_data, user_data):
             new_image_rgba = new_image
         gray_background[offset_y:offset_y + crop_rotate_ui.orig_h, 
                         offset_x:offset_x + crop_rotate_ui.orig_w] = new_image_rgba
-        
-        panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
-        if panel_w <= 0 or panel_h <= 0:
-            panel_w, panel_h = crop_rotate_ui.texture_w, crop_rotate_ui.texture_h
-        # Ajustar límites de ejes para la imagen completa
-        plot_aspect = panel_w / panel_h
-        texture_aspect = crop_rotate_ui.texture_w / crop_rotate_ui.texture_h
-        if plot_aspect > texture_aspect:
-            x_min, x_max = 0, crop_rotate_ui.texture_h * plot_aspect
-            y_min, y_max = 0, crop_rotate_ui.texture_h
-        else:
-            x_min, x_max = 0, crop_rotate_ui.texture_w
-            y_min, y_max = crop_rotate_ui.texture_w / plot_aspect, crop_rotate_ui.texture_w / plot_aspect
         dpg.add_raw_texture(crop_rotate_ui.texture_w, crop_rotate_ui.texture_h,
                            gray_background.flatten().astype(np.float32) / 255.0,
                            tag=crop_rotate_ui.texture_tag)
     
     main_window.set_crop_rotate_ui(crop_rotate_ui)
+    crop_rotate_ui.update_axis_limits()
 
 def save_image_callback():
     dpg.show_item("file_dialog_save")

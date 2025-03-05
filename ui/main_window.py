@@ -24,7 +24,7 @@ class MainWindow:
             with dpg.group(horizontal=True):
                 # Crear el Central Panel con su contenido desde el inicio
                 with dpg.child_window(tag=self.central_panel_tag, width=central_panel_width, height=viewport_height):
-                        pass
+                    pass
                 with dpg.child_window(tag=self.right_panel_tag, width=right_panel_width, height=viewport_height):
                     self.tool_panel = ToolPanel(callback=self.update_callback,
                                                 load_callback=self.load_callback,

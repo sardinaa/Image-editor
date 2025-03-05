@@ -218,11 +218,10 @@ class ImageProcessor:
             hr = (h * cos_a - w * sin_a) / cos_2a
         return int(wr), int(hr)
 
-    def crop_rotate_flip(self, image, crop_rect, angle, flip_horizontal=False, flip_vertical=False):
+    def crop_rotate_flip(self, image, crop_rect, flip_horizontal=False, flip_vertical=False):
         """Aplica rotación y recorte en una sola operación."""
-        rotated = self.rotate_image(image, angle)
         x, y, w, h = crop_rect
-        cropped = rotated[y:y+h, x:x+w]
+        cropped = image[y:y+h, x:x+w]
         if flip_horizontal:
             cropped = cv2.flip(cropped, 1)
         if flip_vertical:
