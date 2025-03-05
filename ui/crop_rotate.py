@@ -12,6 +12,8 @@ class CropRotateUI:
         self.prev_zoom = self.default_scale
         self.prev_angle = 0
         self.rotated_image = None
+        self.offset_x = 0
+        self.offset_y = 0
 
         self.texture_w = int(np.ceil(diagonal))
         self.texture_h = self.texture_w
@@ -40,19 +42,6 @@ class CropRotateUI:
         angle = dpg.get_value(self.rotation_slider)
         crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
 
-        plot_aspect = panel_w / panel_h
-        texture_aspect = self.texture_w / self.texture_h
-        if plot_aspect > texture_aspect:
-            x_min, x_max = 0, self.texture_h * plot_aspect
-            y_min, y_max = 0, self.texture_h
-        else:
-            x_min, x_max = 0, self.texture_w
-            y_min, y_max = 0, self.texture_w / plot_aspect
-
-        # Actualizar los ejes siempre, sin importar el modo
-        dpg.set_axis_limits("x_axis", x_min, x_max)
-        dpg.set_axis_limits("y_axis", y_min, y_max)
-
         if crop_mode:
             # Modo edición: mostrar imagen rotada completa con rectángulo
             rotated_image = self.image_processor.rotate_image(self.original_image, angle)
@@ -62,7 +51,7 @@ class CropRotateUI:
             self.offset_x = (self.texture_w - rot_w) // 2
             self.offset_y = (self.texture_h - rot_h) // 2
             
-            padded_image = np.full((self.texture_h, self.texture_w, 4), [100, 100, 100, 255], dtype=np.uint8)
+            padded_image = np.full((self.texture_h, self.texture_w, 4), [100, 100, 100, 0], dtype=np.uint8)
             
             if rotated_image.shape[2] == 3:
                 rotated_image = cv2.cvtColor(rotated_image, cv2.COLOR_RGB2RGBA)
@@ -98,7 +87,7 @@ class CropRotateUI:
 
             self.update_rectangle_overlay()
         else:
-            # Modo resultado: mostrar solo la imagen recortada y rotada
+            # Modo resultado: mostrar la imagen con los ajustes básicos aplicados
             if self.user_rect and hasattr(self, 'rotated_image') and self.rotated_image is not None:
                 # Adjust rectangle coordinates relative to the rotated image, not the texture
                 rx = self.user_rect["x"] - self.offset_x
@@ -128,7 +117,7 @@ class CropRotateUI:
 
                     # Create background and center the cropped image
                     gray_background = np.full((self.texture_h, self.texture_w, 4), 
-                                             [100, 100, 100, 255], dtype=np.uint8)
+                                             [100, 100, 100, 0], dtype=np.uint8)
                     
                     offset_x = (self.texture_w - cropped_image.shape[1]) // 2
                     offset_y = (self.texture_h - cropped_image.shape[0]) // 2
@@ -144,6 +133,35 @@ class CropRotateUI:
                         with dpg.texture_registry():
                             dpg.add_dynamic_texture(self.texture_w, self.texture_h, texture_data, 
                                                   tag=self.texture_tag, format=dpg.mvFormat_Float_rgba)
+            else:
+                # Just display the original image with processing parameters but no crop
+                display_image = self.original_image.copy()
+                
+                # Create background and center the image
+                gray_background = np.full((self.texture_h, self.texture_w, 4), 
+                                         [100, 100, 100, 0], dtype=np.uint8)
+                
+                offset_x = (self.texture_w - display_image.shape[1]) // 2
+                offset_y = (self.texture_h - display_image.shape[0]) // 2
+                
+                # Convert to RGBA if needed
+                if display_image.shape[2] == 3:
+                    display_image_rgba = cv2.cvtColor(display_image, cv2.COLOR_RGB2RGBA)
+                else:
+                    display_image_rgba = display_image
+                
+                # Place the image on the background
+                gray_background[offset_y:offset_y + display_image.shape[0], 
+                               offset_x:offset_x + display_image.shape[1]] = display_image_rgba
+                
+                # Update texture
+                texture_data = gray_background.flatten().astype(np.float32) / 255.0
+                if dpg.does_item_exist(self.texture_tag):
+                    dpg.set_value(self.texture_tag, texture_data)
+                else:
+                    with dpg.texture_registry():
+                        dpg.add_dynamic_texture(self.texture_w, self.texture_h, texture_data, 
+                                              tag=self.texture_tag, format=dpg.mvFormat_Float_rgba)
 
     def update_axis_limits(self):
         panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
@@ -151,14 +169,32 @@ class CropRotateUI:
             panel_w, panel_h = dpg.get_item_width("Central Panel"), dpg.get_item_height("Central Panel")
         plot_aspect = panel_w / panel_h
         texture_aspect = self.texture_w / self.texture_h
+        
+        # Center the texture in the plot
         if plot_aspect > texture_aspect:
-            x_min, x_max = 0, self.texture_h * plot_aspect
-            y_min, y_max = 0, self.texture_h
+            # Plot is wider than the texture - center horizontally
+            display_width = self.texture_h * plot_aspect
+            x_center = self.texture_w / 2
+            x_min = x_center - display_width / 2
+            x_max = x_center + display_width / 2
+            y_min = 0
+            y_max = self.texture_h
         else:
-            x_min, x_max = 0, self.texture_w
-            y_min, y_max = 0, self.texture_w / plot_aspect
-        dpg.set_axis_limits("x_axis", x_min, x_max)
-        dpg.set_axis_limits("y_axis", y_min, y_max)
+            # Plot is taller than the texture - center vertically
+            display_height = self.texture_w / plot_aspect
+            y_center = self.texture_h / 2
+            y_min = y_center - display_height / 2
+            y_max = y_center + display_height / 2
+            x_min = 0
+            x_max = self.texture_w
+
+        if dpg.does_item_exist("central_image"):
+            dpg.configure_item("central_image", bounds_min=[-self.offset_x-10, -self.offset_y], bounds_max=[self.texture_w, self.texture_h])
+        else:
+            print("Error: 'central_image' does not exist.")
+            
+        dpg.set_axis_limits("x_axis", x_min-self.offset_x, x_max)
+        dpg.set_axis_limits("y_axis", y_min-self.offset_y, y_max)
 
     def update_rectangle_overlay(self):
         import time

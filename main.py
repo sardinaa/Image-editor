@@ -51,7 +51,7 @@ def load_image_callback():
 def file_load_callback(sender, app_data, user_data):
     global processor, crop_rotate_ui, current_image_path
     #file_path = app_data["file_path_name"]
-    file_path = "sample.png"
+    file_path = "linux.png"
     if not file_path:
         print("No se seleccionó ningún archivo.")
         return
@@ -75,9 +75,17 @@ def file_load_callback(sender, app_data, user_data):
             new_image_rgba = new_image
         gray_background[offset_y:offset_y + crop_rotate_ui.orig_h, 
                         offset_x:offset_x + crop_rotate_ui.orig_w] = new_image_rgba
-        dpg.add_raw_texture(crop_rotate_ui.texture_w, crop_rotate_ui.texture_h,
-                           gray_background.flatten().astype(np.float32) / 255.0,
-                           tag=crop_rotate_ui.texture_tag)
+        
+    if dpg.does_item_exist(crop_rotate_ui.texture_tag):
+        dpg.set_value(crop_rotate_ui.texture_tag, gray_background.flatten().astype(np.float32) / 255.0)
+    else:
+        with dpg.texture_registry():
+            dpg.add_raw_texture(crop_rotate_ui.texture_w, crop_rotate_ui.texture_h,
+                                gray_background.flatten().astype(np.float32) / 255.0,
+                                tag=crop_rotate_ui.texture_tag, format=dpg.mvFormat_Float_rgba)
+
+    crop_rotate_ui.offset_x = offset_x
+    crop_rotate_ui.offset_y = offset_y
     
     main_window.set_crop_rotate_ui(crop_rotate_ui)
     crop_rotate_ui.update_axis_limits()
@@ -106,7 +114,12 @@ def file_save_callback(sender, app_data, user_data):
 def main():
     global main_window
     dpg.create_context()
-    dpg.create_viewport(title='Photo Editor', width=1200, height=800)
+    # Set a specific viewport size that matches common display resolutions
+    dpg.create_viewport(title='Photo Editor', width=1200, height=800, resizable=True, vsync=True)
+    
+    # Configure viewport to position properly
+    dpg.configure_viewport(0, x_pos=50, y_pos=50, clear_color=[45, 45, 45, 255])
+    
     dpg.setup_dearpygui()
 
     main_window = MainWindow(None, update_image_callback, load_image_callback, save_image_callback)
