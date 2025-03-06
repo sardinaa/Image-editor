@@ -50,8 +50,7 @@ def load_image_callback():
 
 def file_load_callback(sender, app_data, user_data):
     global processor, crop_rotate_ui, current_image_path
-    #file_path = app_data["file_path_name"]
-    file_path = "linux.png"
+    file_path = app_data["file_path_name"]
     if not file_path:
         print("No se seleccionó ningún archivo.")
         return
@@ -111,6 +110,21 @@ def file_save_callback(sender, app_data, user_data):
     except Exception as e:
         print("Error al guardar la imagen:", e)
 
+def on_mouse_down(sender, app_data):
+    if main_window:
+        return main_window.on_mouse_down(sender, app_data)
+    return False
+
+def on_mouse_drag(sender, app_data):
+    if main_window:
+        return main_window.on_mouse_drag(sender, app_data)
+    return False
+
+def on_mouse_release(sender, app_data):
+    if main_window:
+        return main_window.on_mouse_release(sender, app_data)
+    return False
+
 def main():
     global main_window
     dpg.create_context()
@@ -124,7 +138,6 @@ def main():
 
     main_window = MainWindow(None, update_image_callback, load_image_callback, save_image_callback)
     main_window.setup()
-    file_load_callback(None, None, None)
 
     with dpg.file_dialog(directory_selector=False, show=False, callback=file_load_callback, tag="file_dialog_load"):
         dpg.add_file_extension(".png")
@@ -141,6 +154,14 @@ def main():
         dpg.add_file_extension(".jpeg")
         dpg.add_file_extension(".tif")
         dpg.add_file_extension(".bmp")
+
+    # Register mouse handlers for box selection
+    if not dpg.does_item_exist("mouse_handler_registry"):
+        with dpg.handler_registry(tag="mouse_handler_registry"):
+            dpg.add_mouse_down_handler(callback=on_mouse_down)
+            dpg.add_mouse_drag_handler(callback=on_mouse_drag)
+            dpg.add_mouse_release_handler(callback=on_mouse_release)
+            dpg.add_mouse_wheel_handler(callback=main_window.on_mouse_wheel)  # Use existing wheel handler
 
     dpg.show_viewport()
     dpg.start_dearpygui()

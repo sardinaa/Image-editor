@@ -2,9 +2,10 @@ import dearpygui.dearpygui as dpg
 from ui.curves_panel import CurvesPanel
 
 class ToolPanel:
-    def __init__(self, callback, crop_and_rotate_ref):
+    def __init__(self, callback, crop_and_rotate_ref, main_window=None):
         self.callback = callback
         self.crop_and_rotate_ref = crop_and_rotate_ref  # Función para obtener la instancia de CropAndRotate
+        self.main_window = main_window  # Add reference to main window
         self.curves = {"r": [(0, 0), (128, 128), (255, 255)],
                       "g": [(0, 0), (128, 128), (255, 255)],
                       "b": [(0, 0), (128, 128), (255, 255)]}
@@ -100,9 +101,32 @@ class ToolPanel:
         return params
 
     def _mask_selected(self, sender, app_data, user_data):
-        # Placeholder callback when a mask is selected from the listbox.
-        print("Selected mask:", app_data)
-        
+        # When a mask is selected, show only that mask and hide others
+        # app_data contains a string like "Mask 1", extract the index from it
+        if isinstance(app_data, str) and app_data.startswith("Mask "):
+            try:
+                # Extract the number from "Mask X" and convert to zero-based index
+                selected_index = int(app_data.split("Mask ")[1]) - 1
+                print(f"Selected mask: {app_data}, converted to index: {selected_index}")
+                
+                # Update mask visibility if main_window is available
+                if self.main_window:
+                    self.main_window.show_selected_mask(selected_index)
+                else:
+                    print("Main window reference not available")
+            except (ValueError, IndexError) as e:
+                print(f"Error parsing mask index from '{app_data}': {e}")
+        else:
+            # Handle case where app_data is already an index
+            selected_index = app_data
+            print(f"Selected mask index: {selected_index}")
+            
+            # Update mask visibility if main_window is available
+            if self.main_window:
+                self.main_window.show_selected_mask(selected_index)
+            else:
+                print("Main window reference not available")
+    
     def update_masks(self, masks):
         # Create listbox entries based on the number of masks
         items = [f"Mask {idx+1}" for idx in range(len(masks))]

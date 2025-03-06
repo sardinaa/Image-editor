@@ -4,7 +4,7 @@ import numpy as np
 class CurvesPanel:
     def __init__(self, callback):
         self.callback = callback  # Callback to update the image after curves changes
-        self.current_channel = "RGB"  # Default to RGB (all channels)
+        self.current_channel = "RGB"  # Default to RGB (all channels) 
         self.channels = ["RGB", "R", "G", "B"]
         self.curves = {
             "r": [(0, 0), (128, 128), (255, 255)],  # Default linear curve for R
