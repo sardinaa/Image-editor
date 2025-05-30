@@ -16,31 +16,43 @@ class ToolPanel:
         with dpg.group(horizontal=False):
             dpg.add_text("Basic Editing Tools", color=[176, 204, 255])
             dpg.add_separator()
-            dpg.add_spacer(height=5)
+            dpg.add_spacer(height=2)
+            
+            # Crop section - make it more compact
             dpg.add_checkbox(label="Crop & Rotate", tag="crop_mode", default_value=False, callback=self.toggle_crop_mode)
-            with dpg.child_window(tag="crop_panel", height=100, autosize_x=True, show=False, border=True):
-                dpg.add_slider_float(label="Rotation Angle", tag="rotation_slider",
+            with dpg.child_window(tag="crop_panel", height=65, autosize_x=True, show=False, border=True):
+                dpg.add_slider_float(label="Rotation", tag="rotation_slider", height=18,
                                     min_value=0, max_value=360, default_value=0, callback=self._update_crop_rotate)
-                dpg.add_button(label="Maximum Area", callback=self._set_max_rect, width=-1)
+                dpg.add_button(label="Max Area", callback=self._set_max_rect, width=-1, height=18)
 
             dpg.add_separator()
+            dpg.add_spacer(height=2)
             
-            # Add some spacing for better readability
-            dpg.add_spacer(height=5)
+            # Exposure & Lighting group
+            dpg.add_text("Exposure & Lighting", color=[200, 200, 200])
+            dpg.add_slider_int(label="Exposure", tag="exposure", default_value=0, min_value=-100, max_value=100, height=18, callback=self._param_changed)
+            dpg.add_slider_float(label="Illumination", tag="illumination", default_value=0.0, min_value=-50.0, max_value=50.0, height=18, callback=self._param_changed)
+            dpg.add_slider_float(label="Contrast", tag="contrast", default_value=1.0, min_value=0.5, max_value=3.0, height=18, callback=self._param_changed)
             
-            dpg.add_slider_int(label="Exposure", tag="exposure", default_value=0, min_value=-100, max_value=100, callback=self._param_changed)
-            dpg.add_slider_float(label="Illumination", tag="illumination", default_value=0.0, min_value=-50.0, max_value=50.0, callback=self._param_changed)
-            dpg.add_slider_float(label="Contrast", tag="contrast", default_value=1.0, min_value=0.5, max_value=3.0, callback=self._param_changed)
-            dpg.add_slider_int(label="Shadow", tag="shadow", default_value=0, min_value=-100, max_value=100, callback=self._param_changed)
-            dpg.add_slider_int(label="Whites", tag="whites", default_value=0, min_value=-100, max_value=100, callback=self._param_changed)
-            dpg.add_slider_int(label="Blacks", tag="blacks", default_value=0, min_value=-100, max_value=100, callback=self._param_changed)
-            dpg.add_slider_float(label="Saturation", tag="saturation", default_value=1.0, min_value=0.0, max_value=3.0, callback=self._param_changed)
-            dpg.add_slider_int(label="Texture", tag="texture", default_value=0, min_value=0, max_value=10, callback=self._param_changed)
-            dpg.add_slider_int(label="Grain", tag="grain", default_value=0, min_value=0, max_value=50, callback=self._param_changed)
-            dpg.add_slider_int(label="Temperature", tag="temperature", default_value=0, min_value=-50, max_value=50, callback=self._param_changed)
+            dpg.add_spacer(height=1)
+            
+            # Tone Adjustments group
+            dpg.add_text("Tone Adjustments", color=[200, 200, 200])
+            dpg.add_slider_int(label="Shadow", tag="shadow", default_value=0, min_value=-100, max_value=100, height=18, callback=self._param_changed)
+            dpg.add_slider_int(label="Whites", tag="whites", default_value=0, min_value=-100, max_value=100, height=18, callback=self._param_changed)
+            dpg.add_slider_int(label="Blacks", tag="blacks", default_value=0, min_value=-100, max_value=100, height=18, callback=self._param_changed)
+            
+            dpg.add_spacer(height=1)
+            
+            # Color & Effects group
+            dpg.add_text("Color & Effects", color=[200, 200, 200])
+            dpg.add_slider_float(label="Saturation", tag="saturation", default_value=1.0, min_value=0.0, max_value=3.0, height=18, callback=self._param_changed)
+            dpg.add_slider_int(label="Texture", tag="texture", default_value=0, min_value=0, max_value=10, height=18, callback=self._param_changed)
+            dpg.add_slider_int(label="Grain", tag="grain", default_value=0, min_value=0, max_value=50, height=18, callback=self._param_changed)
+            dpg.add_slider_int(label="Temperature", tag="temperature", default_value=0, min_value=-50, max_value=50, height=18, callback=self._param_changed)
             
             dpg.add_separator()
-            dpg.add_spacer(height=5)
+            dpg.add_spacer(height=2)
             dpg.add_text("RGB Curves", color=[176, 204, 255])
             
             # Embed the curves panel directly in the tool panel
@@ -48,12 +60,17 @@ class ToolPanel:
             self.curves_panel.curves = self.curves
             self.curves_panel.show()
             
-            # New Masks section
+            # New Masks section - more compact
             dpg.add_separator()
+            dpg.add_spacer(height=2)
             dpg.add_text("Masks", color=[176, 204, 255])
-            dpg.add_listbox(items=[], tag="mask_list", callback=self._mask_selected, num_items=4)
+            dpg.add_listbox(items=[], tag="mask_list", callback=self._mask_selected, num_items=2)
 
     def _param_changed(self, sender, app_data, user_data):
+        # Sync curves from curves panel if it exists
+        if self.curves_panel:
+            self.curves = self.curves_panel.get_curves()
+        
         if self.callback:
             self.callback()
 
@@ -83,6 +100,10 @@ class ToolPanel:
         self._param_changed(sender, app_data, user_data)
         
     def get_parameters(self):
+        # Sync curves from curves panel before returning parameters
+        if self.curves_panel:
+            self.curves = self.curves_panel.get_curves()
+            
         params = {
             'exposure': dpg.get_value("exposure"),
             'illumination': dpg.get_value("illumination"),
@@ -94,10 +115,11 @@ class ToolPanel:
             'texture': dpg.get_value("texture"),
             'grain': dpg.get_value("grain"),
             'temperature': dpg.get_value("temperature"),
-            'curves': self.curves_panel.get_curves() if self.curves_panel else self.curves,
+            'curves': self.curves,
             'rotate_angle': dpg.get_value("rotation_slider") if dpg.does_item_exist("rotation_slider") else 0,
             'crop_mode': dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
         }
+        print(f"Tool panel returning curves: {self.curves}")  # Debug output
         return params
 
     def _mask_selected(self, sender, app_data, user_data):

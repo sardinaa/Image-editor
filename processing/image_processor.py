@@ -139,37 +139,57 @@ class ImageProcessor:
             b = cv2.add(b, np.full(b.shape, -value, dtype=np.uint8))
         return cv2.merge([b, g, r])
 
-    def apply_rgb_curves(self, image, curves):
+    def apply_rgb_curves(self, image, curves, interpolation_mode="Linear"):
         """
         Applies custom RGB curves to the image.
         curves: a dict with keys 'r', 'g', 'b'. Each value is a list of control points [(x, y), ...]
         where x and y are in [0,255]. If a channel is missing, that channel remains unchanged.
+        interpolation_mode: "Linear" or "Spline"
         """
         if curves is None:
             return image
         # Split channels (note: OpenCV uses BGR order)
         b, g, r = cv2.split(image)
         if "r" in curves and curves["r"]:
-            lut_r = self.generate_lut_from_points(curves["r"])
+            lut_r = self.generate_lut_from_points(curves["r"], interpolation_mode)
             r = cv2.LUT(r, lut_r)
         if "g" in curves and curves["g"]:
-            lut_g = self.generate_lut_from_points(curves["g"])
+            lut_g = self.generate_lut_from_points(curves["g"], interpolation_mode)
             g = cv2.LUT(g, lut_g)
         if "b" in curves and curves["b"]:
-            lut_b = self.generate_lut_from_points(curves["b"])
+            lut_b = self.generate_lut_from_points(curves["b"], interpolation_mode)
             b = cv2.LUT(b, lut_b)
         return cv2.merge([b, g, r])
     
-    def generate_lut_from_points(self, points):
-        # Simple linear interpolation for a 256-entry LUT.
+    def generate_lut_from_points(self, points, interpolation_mode="Linear"):
+        """Generate a lookup table from control points using specified interpolation"""
         import numpy as np
         if len(points) < 2:
             return np.arange(256, dtype=np.uint8)
+        
         points = sorted(points, key=lambda p: p[0])
         xs, ys = zip(*points)
         xs = np.array(xs)
         ys = np.array(ys)
-        lut = np.interp(np.arange(256), xs, ys)
+        
+        if interpolation_mode == "Spline" and len(points) >= 3:
+            try:
+                from scipy.interpolate import CubicSpline
+                # Create cubic spline interpolation
+                cs = CubicSpline(xs, ys, bc_type='natural')
+                lut = cs(np.arange(256))
+                # Clamp values to valid range
+                lut = np.clip(lut, 0, 255)
+            except ImportError:
+                # Fallback to linear interpolation if scipy is not available
+                lut = np.interp(np.arange(256), xs, ys)
+            except Exception:
+                # Fallback to linear interpolation on any error
+                lut = np.interp(np.arange(256), xs, ys)
+        else:
+            # Linear interpolation (default)
+            lut = np.interp(np.arange(256), xs, ys)
+            
         return lut.astype(np.uint8)
    
     def rotate_image(self, image, angle, scale=1.0):
@@ -218,12 +238,23 @@ class ImageProcessor:
             hr = (h * cos_a - w * sin_a) / cos_2a
         return int(wr), int(hr)
 
-    def crop_rotate_flip(self, image, crop_rect, flip_horizontal=False, flip_vertical=False):
+    def crop_rotate_flip(self, image, crop_rect, angle=0, flip_horizontal=False, flip_vertical=False):
         """Aplica rotación y recorte en una sola operación."""
         x, y, w, h = crop_rect
-        cropped = image[y:y+h, x:x+w]
+        
+        # First crop the image
+        cropped = image[y:y+h, x:x+w].copy()
+        
+        # Apply rotation if needed
+        if angle != 0:
+            center = (w // 2, h // 2)
+            rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+            cropped = cv2.warpAffine(cropped, rotation_matrix, (w, h), flags=cv2.INTER_LINEAR)
+        
+        # Apply flips if needed
         if flip_horizontal:
             cropped = cv2.flip(cropped, 1)
         if flip_vertical:
             cropped = cv2.flip(cropped, 0)
+            
         return cropped

@@ -29,17 +29,19 @@ class MainWindow:
     def setup(self):
         viewport_width = dpg.get_viewport_client_width()
         viewport_height = dpg.get_viewport_client_height()
-        right_panel_width = int(viewport_width * 0.2)
+        menu_bar_height = 30  # Account for menu bar + padding
+        available_height = viewport_height - menu_bar_height
+        right_panel_width = int(viewport_width * 0.25)  # 25% for tools panel
         central_panel_width = viewport_width - right_panel_width
 
-        with dpg.window(label="Photo Editor", tag=self.window_tag, width=viewport_width, height=viewport_height, no_scrollbar=True, no_move=True, no_resize=True):
+        with dpg.window(label="Photo Editor", tag=self.window_tag, width=viewport_width, height=viewport_height, no_scrollbar=True, no_move=True, no_resize=True, no_collapse=True):
             self.create_menu()
             with dpg.group(horizontal=True):
-                # Disable scrollbars in the Central Panel
-                with dpg.child_window(tag=self.central_panel_tag, width=central_panel_width, height=viewport_height, border=False, no_scrollbar=True):
+                # Central Panel - image preview
+                with dpg.child_window(tag=self.central_panel_tag, width=central_panel_width, height=available_height, border=False, no_scrollbar=True):
                     pass
-                # Disable scrollbars in the Right Panel
-                with dpg.child_window(tag=self.right_panel_tag, width=right_panel_width, height=viewport_height, no_scrollbar=True):
+                # Right Panel - tools with compact layout
+                with dpg.child_window(tag=self.right_panel_tag, width=right_panel_width, height=available_height, no_scrollbar=True, horizontal_scrollbar=False):
                     self.tool_panel = ToolPanel(callback=self.update_callback,
                                                 crop_and_rotate_ref=lambda: self.crop_rotate_ui,
                                                 main_window=self)  # Pass self reference to ToolPanel
@@ -66,21 +68,59 @@ class MainWindow:
     def create_central_panel_content(self):
         # Añadir el image_series y los manejadores cuando tengamos crop_rotate_ui
         if not dpg.does_item_exist("central_image") and self.crop_rotate_ui:
-            with dpg.plot(label="Image Plot", no_mouse_pos=False, height=-1, width=-1, 
-                          parent=self.central_panel_tag, 
-                          anti_aliased=True,
-                          pan_button=dpg.mvMouseButton_Left,  # Enable panning with left mouse button
-                          fit_button=dpg.mvMouseButton_Middle,  # Fit view with middle mouse button
-                          track_offset=True,  # Allow tracking offset for panning
-                          tag="image_plot"):
-                dpg.add_plot_axis(dpg.mvXAxis, label="X", no_gridlines=True, tag="x_axis")
-                dpg.add_plot_axis(dpg.mvYAxis, label="Y", no_gridlines=True, tag="y_axis")
-                y_axis = dpg.get_item_children(dpg.get_item_children(self.central_panel_tag, slot=1)[0], slot=1)[1]  # Obtener y_axis
-                dpg.add_image_series(self.crop_rotate_ui.texture_tag,
-                                     bounds_min=[0, 0],
-                                     bounds_max=[self.crop_rotate_ui.texture_w, self.crop_rotate_ui.texture_h],
-                                     parent=y_axis,
-                                     tag="central_image")
+            # Get the actual central panel dimensions
+            try:
+                # Try to get actual central panel dimensions
+                central_panel_width = dpg.get_item_width(self.central_panel_tag)
+                central_panel_height = dpg.get_item_height(self.central_panel_tag)
+                
+                # Fallback to viewport calculations if panel dimensions aren't available yet
+                if central_panel_width <= 0 or central_panel_height <= 0:
+                    viewport_width = dpg.get_viewport_client_width()
+                    viewport_height = dpg.get_viewport_client_height()
+                    menu_bar_height = 30
+                    central_panel_height = viewport_height - menu_bar_height
+                    central_panel_width = int(viewport_width * 0.75)  # 75% of viewport (100% - 25% for tools)
+            except:
+                # Fallback if there are any issues
+                viewport_width = dpg.get_viewport_client_width()
+                viewport_height = dpg.get_viewport_client_height()
+                menu_bar_height = 30
+                central_panel_height = viewport_height - menu_bar_height
+                central_panel_width = int(viewport_width * 0.75)
+            
+            # Make the plot use the full rectangular space available
+            margin = 5  # Very minimal margin for plot borders
+            plot_width = max(central_panel_width - margin, 200)  # Use full width
+            plot_height = max(central_panel_height - margin, 200)  # Use full height
+            
+            # Create a container that fills the entire central panel
+            with dpg.child_window(parent=self.central_panel_tag, width=-1, height=-1, 
+                                border=False, no_scrollbar=True):
+                # No centering spacers - let the plot fill the space
+                # Create the plot to fill the entire available rectangular space
+                with dpg.plot(label="Image Plot", no_mouse_pos=False, 
+                              height=plot_height, width=plot_width, 
+                                  anti_aliased=True,
+                                  pan_button=dpg.mvMouseButton_Left,
+                                  fit_button=dpg.mvMouseButton_Middle,
+                                  track_offset=True,
+                                  # Remove equal_aspects to allow full rectangular usage
+                                  tag="image_plot"):
+                        dpg.add_plot_axis(dpg.mvXAxis, label="X", no_gridlines=True, tag="x_axis")
+                        dpg.add_plot_axis(dpg.mvYAxis, label="Y", no_gridlines=True, tag="y_axis")
+                        y_axis = dpg.last_item()  # Get the y_axis reference
+                        
+                        # Calculate the actual image position within the texture
+                        image_offset_x = (self.crop_rotate_ui.texture_w - self.crop_rotate_ui.orig_w) // 2
+                        image_offset_y = (self.crop_rotate_ui.texture_h - self.crop_rotate_ui.orig_h) // 2
+                        
+                        # Create image series that shows the full texture but properly bounded
+                        dpg.add_image_series(self.crop_rotate_ui.texture_tag,
+                                             bounds_min=[0, 0],
+                                             bounds_max=[self.crop_rotate_ui.texture_w, self.crop_rotate_ui.texture_h],
+                                             parent=y_axis,
+                                             tag="central_image")
             # Registrar manejadores de mouse solo una vez
             if not dpg.does_item_exist("mouse_handler_registry"):
                 with dpg.handler_registry(tag="mouse_handler_registry"):
@@ -94,58 +134,122 @@ class MainWindow:
     
         # Replace draw_layer with a drawlist widget
         if not dpg.does_item_exist(self.draw_list_tag) and dpg.does_item_exist("image_plot"):
-            y_axis = dpg.get_item_children(dpg.get_item_children(self.central_panel_tag, slot=1)[0], slot=1)[1]
-            # Create a drawlist with a fixed size (adjust as needed)
-            dpg.add_drawlist(width=600, height=400, tag=self.draw_list_tag, parent=y_axis, show=False)
-            dpg.draw_rectangle([0, 0], [0, 0], color=[255, 255, 0], thickness=2, 
-                               tag=self.box_rect_tag, parent=self.draw_list_tag)
+            # Get the y_axis from the plot
+            plot_children = dpg.get_item_children("image_plot", slot=1)
+            if plot_children and len(plot_children) >= 2:
+                y_axis = plot_children[1]  # Second child is usually the y_axis
+                # Create a drawlist with the same size as the plot
+                plot_width = dpg.get_item_width("image_plot")
+                plot_height = dpg.get_item_height("image_plot")
+                dpg.add_drawlist(width=plot_width, height=plot_height, tag=self.draw_list_tag, parent=y_axis, show=False)
+                dpg.draw_rectangle([0, 0], [0, 0], color=[255, 255, 0], thickness=2, 
+                                   tag=self.box_rect_tag, parent=self.draw_list_tag)
 
     def update_axis_limits(self, initial=False):
         if not initial and dpg.does_item_exist("image_plot"):
             # If not initial setup, don't override user's pan/zoom
             return
             
-        viewport_width = dpg.get_viewport_client_width()
-        viewport_height = dpg.get_viewport_client_height()
-        panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
-        if panel_w <= 0 or panel_h <= 0:
-            panel_w, panel_h = dpg.get_item_width("Central Panel"), dpg.get_item_height("Central Panel")
-        plot_aspect = panel_w / panel_h
-        texture_aspect = self.crop_rotate_ui.texture_w / self.crop_rotate_ui.texture_h
+        if not self.crop_rotate_ui:
+            return
+            
+        # Get actual image dimensions and texture dimensions
+        orig_w = self.crop_rotate_ui.orig_w
+        orig_h = self.crop_rotate_ui.orig_h
+        texture_w = self.crop_rotate_ui.texture_w
+        texture_h = self.crop_rotate_ui.texture_h
         
-        # Center the texture in the plot
-        if plot_aspect > texture_aspect:
-            # Plot is wider than the texture - center horizontally
-            display_width = self.crop_rotate_ui.texture_h * plot_aspect
-            x_center = self.crop_rotate_ui.texture_w / 2
+        # Calculate where the image is positioned within the texture (centered)
+        image_offset_x = (texture_w - orig_w) // 2
+        image_offset_y = (texture_h - orig_h) // 2
+        
+        # Get current plot dimensions
+        plot_width = dpg.get_item_width("image_plot") if dpg.does_item_exist("image_plot") else 800
+        plot_height = dpg.get_item_height("image_plot") if dpg.does_item_exist("image_plot") else 600
+        
+        if plot_width <= 0 or plot_height <= 0:
+            plot_width, plot_height = 800, 600  # Fallback dimensions
+        
+        # Calculate aspect ratios
+        plot_aspect = plot_width / plot_height
+        image_aspect = orig_w / orig_h
+        
+        # Calculate how to fit the actual image (not texture) within the plot while maintaining aspect ratio
+        # We want to show the image area with some padding to see the whole image properly
+        padding_factor = 1.05  # 5% padding around the image
+        
+        if image_aspect > plot_aspect:
+            # Image is wider relative to plot - fit to plot width
+            # Show the full image width with padding
+            display_width = orig_w * padding_factor
+            display_height = display_width / plot_aspect
+            
+            # Center the view on the actual image
+            x_center = image_offset_x + orig_w / 2
+            y_center = image_offset_y + orig_h / 2
             x_min = x_center - display_width / 2
             x_max = x_center + display_width / 2
-            y_min = 0
-            y_max = self.crop_rotate_ui.texture_h
-        else:
-            # Plot is taller than the texture - center vertically
-            display_height = self.crop_rotate_ui.texture_w / plot_aspect
-            y_center = self.crop_rotate_ui.texture_h / 2
             y_min = y_center - display_height / 2
             y_max = y_center + display_height / 2
-            x_min = 0
-            x_max = self.crop_rotate_ui.texture_w
-
-        if dpg.does_item_exist("central_image"):
-            dpg.configure_item("central_image", bounds_min=[0, 0], bounds_max=[self.crop_rotate_ui.texture_w, self.crop_rotate_ui.texture_h])
         else:
-            print("Error: 'central_image' does not exist.")
+            # Image is taller relative to plot - fit to plot height
+            # Show the full image height with padding
+            display_height = orig_h * padding_factor
+            display_width = display_height * plot_aspect
             
+            # Center the view on the actual image
+            x_center = image_offset_x + orig_w / 2
+            y_center = image_offset_y + orig_h / 2
+            x_min = x_center - display_width / 2
+            x_max = x_center + display_width / 2
+            y_min = y_center - display_height / 2
+            y_max = y_center + display_height / 2
+
+        # Don't modify the image series bounds - keep them as the full texture
+        # The texture contains the properly centered and positioned image
+        
         dpg.set_axis_limits("x_axis", x_min, x_max)
         dpg.set_axis_limits("y_axis", y_min, y_max)
 
     def on_resize(self, sender, app_data):
         viewport_width = dpg.get_viewport_client_width()
         viewport_height = dpg.get_viewport_client_height()
-        right_panel_width = int(viewport_width * 0.2)
+        menu_bar_height = 30  # Account for menu bar height + padding
+        available_height = viewport_height - menu_bar_height
+        right_panel_width = int(viewport_width * 0.25)  # 25% for tools
         central_panel_width = viewport_width - right_panel_width
-        dpg.configure_item(self.central_panel_tag, width=central_panel_width, height=viewport_height)
-        dpg.configure_item(self.right_panel_tag, width=right_panel_width, height=viewport_height)
+        
+        # Update panel sizes
+        dpg.configure_item(self.central_panel_tag, width=central_panel_width, height=available_height)
+        dpg.configure_item(self.right_panel_tag, width=right_panel_width, height=available_height)
+        
+        # Update plot size to use full rectangular space and maintain image aspect ratio
+        if dpg.does_item_exist("image_plot"):
+            # Use actual central panel dimensions when available
+            try:
+                actual_central_width = dpg.get_item_width(self.central_panel_tag)
+                actual_central_height = dpg.get_item_height(self.central_panel_tag)
+                if actual_central_width > 0 and actual_central_height > 0:
+                    central_panel_width = actual_central_width
+                    available_height = actual_central_height
+            except:
+                pass  # Use calculated dimensions as fallback
+                
+            margin = 5  # Very minimal margin for more space
+            plot_width = max(central_panel_width - margin, 200)  # Use full width
+            plot_height = max(available_height - margin, 200)  # Use full height
+            
+            # Update the plot size to use full rectangular space
+            dpg.configure_item("image_plot", width=plot_width, height=plot_height)
+            
+            # Update drawlist size to match plot size
+            if dpg.does_item_exist(self.draw_list_tag):
+                dpg.configure_item(self.draw_list_tag, width=plot_width, height=plot_height)
+        
+        # Update curves panel plot size to maintain square aspect ratio
+        if self.tool_panel and self.tool_panel.curves_panel:
+            self.tool_panel.curves_panel.resize_plot()
+        
         if self.crop_rotate_ui:
             self.crop_rotate_ui.update_image(None, None, None)
             # On resize, we want to reset the view
@@ -214,9 +318,27 @@ class MainWindow:
         dpg.draw_rectangle(self.box_start, self.box_end, color=[255, 255, 0], thickness=2,
                            tag=self.box_rect_tag, parent=self.draw_list_tag)
 
+    def on_key_press(self, sender, app_data):
+        """Handle keyboard events"""
+        
+        # Check if Delete key was pressed (key code 261)
+        if app_data == 261:  # Delete key
+            # Forward to curves panel if it exists and has focus
+            if self.tool_panel and hasattr(self.tool_panel, 'curves_panel') and self.tool_panel.curves_panel:
+                self.tool_panel.curves_panel.delete_selected_point()
+                return True
+        
+        return False
+
     def on_mouse_down(self, sender, app_data):
         """Handle mouse down events for box selection"""
-        # First check if the box selection mode is active
+        # First check if the mouse is over the curves plot
+        if self.tool_panel and self.tool_panel.curves_panel:
+            if self.tool_panel.curves_panel.is_mouse_over_plot():
+                self.tool_panel.curves_panel.on_click(sender, app_data)
+                return True
+        
+        # Check if the box selection mode is active
         if not self.box_selection_mode:
             # Forward to crop_rotate_ui if needed
             if self.crop_rotate_ui:
@@ -242,6 +364,12 @@ class MainWindow:
     
     def on_mouse_drag(self, sender, app_data):
         """Handle mouse drag events for box selection"""
+        # First check if the mouse is over the curves plot
+        if self.tool_panel and self.tool_panel.curves_panel:
+            if self.tool_panel.curves_panel.is_mouse_over_plot() or self.tool_panel.curves_panel.dragging_point is not None:
+                self.tool_panel.curves_panel.on_drag(sender, app_data)
+                return True
+        
         if not self.box_selection_mode or not self.box_selection_active:
             # Forward to crop_rotate_ui if needed
             if self.crop_rotate_ui:
@@ -261,6 +389,12 @@ class MainWindow:
     
     def on_mouse_release(self, sender, app_data):
         """Handle mouse release events for box selection"""
+        # First check if we're dealing with curves panel drag release
+        if self.tool_panel and self.tool_panel.curves_panel:
+            if self.tool_panel.curves_panel.dragging_point is not None:
+                self.tool_panel.curves_panel.on_release(sender, app_data)
+                return True
+        
         if not self.box_selection_mode or not self.box_selection_active:
             # Forward to crop_rotate_ui if needed
             if self.crop_rotate_ui:
@@ -341,8 +475,12 @@ class MainWindow:
         colors = [(255, 0, 0, 100), (0, 255, 0, 100), (0, 0, 255, 100), (255, 255, 0, 100)]
         w = self.crop_rotate_ui.texture_w
         h = self.crop_rotate_ui.texture_h
-        # Get the y_axis from the central panel (where the image series is attached)
-        y_axis = dpg.get_item_children(dpg.get_item_children(self.central_panel_tag, slot=1)[0], slot=1)[1]
+        # Get the y_axis from the plot (where the image series is attached)
+        plot_children = dpg.get_item_children("image_plot", slot=1)
+        if not plot_children or len(plot_children) < 2:
+            print("Error: Could not find y_axis in plot")
+            return
+        y_axis = plot_children[1]  # Second child is usually the y_axis
         
         # Create all mask overlays first
         for idx, mask in enumerate(masks):

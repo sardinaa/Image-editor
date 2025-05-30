@@ -17,17 +17,62 @@ class CurvesPanel:
         self.y_axis_tag = "curves_y_axis"
         self.line_tag = "curves_line_series"  # Changed to be more descriptive and unique
         self.dragging_point = None
+        self.selected_point = None  # Track selected point for deletion
         self.point_size = 5
+        self.pending_single_click = None  # Store pending single click data
+        self.single_click_delay = 0.3  # Delay single clicks to detect double clicks
+        self.double_click_threshold = 0.5  # 500ms - ignore single clicks within this time after double-click
+        
+        # Interpolation mode: "Linear" or "Spline"
+        self.interpolation_modes = ["Linear", "Spline"]
+        self.current_interpolation = "Linear"
+        self.interpolation_combo_tag = "curves_interpolation_combo"
+        
+        # Plot sizing
+        self.plot_size = 150  # Default plot size
+        self.min_plot_size = 100  # Minimum plot size
+        self.max_plot_size = 250  # Maximum plot size
         
         # Create theme tags
         self.theme_rgb = "curves_theme_rgb"
         self.theme_r = "curves_theme_r"
         self.theme_g = "curves_theme_g"
         self.theme_b = "curves_theme_b"
+        self.theme_blue_selected = "curves_theme_blue_selected"
         
         # Create themes for each channel
         self._create_channel_themes()
         
+    def _calculate_plot_size(self):
+        """Calculate optimal plot size based on available space in tool panel"""
+        try:
+            # Get the viewport dimensions
+            viewport_width = dpg.get_viewport_client_width()
+            viewport_height = dpg.get_viewport_client_height()
+            
+            # Calculate available width for the tool panel (25% of viewport)
+            tool_panel_width = int(viewport_width * 0.25)
+            
+            # Account for padding and margins in the tool panel
+            margin = 40  # Margins for plot borders and scrollbars
+            available_width = tool_panel_width - margin
+            
+            # Calculate square plot size - use available width but respect min/max constraints
+            plot_size = min(max(available_width, self.min_plot_size), self.max_plot_size)
+            
+            # Ensure it's a reasonable size for the curves editor
+            self.plot_size = max(plot_size, self.min_plot_size)
+            
+        except Exception as e:
+            # Fallback to default size if any error occurs
+            self.plot_size = 150
+    
+    def resize_plot(self):
+        """Resize the plot when window dimensions change"""
+        if dpg.does_item_exist(self.plot_tag):
+            self._calculate_plot_size()
+            dpg.configure_item(self.plot_tag, width=self.plot_size, height=self.plot_size)
+    
     def show(self):
         """Show the curves editor directly in the tool panel"""
         self.create_panel()
@@ -42,11 +87,14 @@ class CurvesPanel:
     
     def create_panel(self):
         """Create the curves editor panel directly in the parent"""
+        # Calculate the optimal plot size for current window dimensions
+        self._calculate_plot_size()
+        
         # Create a group for the curves editor
         with dpg.group():
-            # Fix radio buttons: Use a single radio button group
+            # Fix radio buttons: Use a single radio button group - more compact
             with dpg.group(horizontal=True):
-                dpg.add_text("Channel: ")
+                dpg.add_text("Ch:")  # Shorter label
                 # Create a single radio button widget with all options
                 dpg.add_radio_button(
                     items=self.channels,
@@ -56,10 +104,9 @@ class CurvesPanel:
                     horizontal=True
                 )
             
-            # Add plot for curves
-            with dpg.plot(tag=self.plot_tag, height=200, width=-1):
-                # Add plot legend
-                dpg.add_plot_legend()
+            # Add the plot for curves - square aspect ratio (1:1) that resizes
+            with dpg.plot(tag=self.plot_tag, height=self.plot_size, width=self.plot_size,
+                         callback=self.on_plot_callback) as plot:
                 
                 # Add plot axes with unique tags
                 dpg.add_plot_axis(dpg.mvXAxis, label="Input", tag=self.x_axis_tag)
@@ -70,19 +117,31 @@ class CurvesPanel:
                 dpg.set_axis_limits(self.y_axis_tag, 0, 255)
                 
                 # Add reference line using a simple series instead of a draw layer
-                dpg.add_line_series([0, 255], [0, 255], label="Reference", parent=self.y_axis_tag)
+                dpg.add_line_series([0, 255], [0, 255], parent=self.y_axis_tag)
             
-            # Add handler for mouse interactions (with unique tag)
-            with dpg.handler_registry(tag="curves_mouse_handler"):
-                dpg.add_mouse_click_handler(callback=self.on_click)
-                dpg.add_mouse_drag_handler(callback=self.on_drag)
-                dpg.add_mouse_release_handler(callback=self.on_release)
-                # Add hover handler to highlight points
-                dpg.add_mouse_move_handler(callback=self.on_mouse_move)
+            # Add plot-specific mouse handlers using item handlers
+            with dpg.item_handler_registry() as plot_handlers:
+                dpg.add_item_clicked_handler(callback=self.on_plot_clicked_direct)
+                dpg.add_item_hover_handler(callback=self.on_plot_hover_direct)
             
-            # Add only the reset button, removing apply and close
+            # Bind the handlers to the plot
+            dpg.bind_item_handler_registry(self.plot_tag, plot_handlers)
+            
+            # Add controls - more compact
             with dpg.group(horizontal=True):
-                dpg.add_button(label="Reset Curve", callback=self.reset_curve, width=-1)
+                dpg.add_button(label="Reset", callback=self.reset_curve, width=55, height=18)
+                dpg.add_button(label="Delete", callback=self.delete_selected_point, width=55, height=18)
+            
+            # Add interpolation mode dropdown - smaller
+            with dpg.group(horizontal=True):
+                dpg.add_text("Mode:")
+                dpg.add_combo(
+                    items=self.interpolation_modes,
+                    tag=self.interpolation_combo_tag,
+                    callback=self.change_interpolation_mode,
+                    default_value=self.current_interpolation,
+                    width=75
+                )
             
             # Update the plot immediately
             self.update_plot()
@@ -121,6 +180,12 @@ class CurvesPanel:
                 dpg.add_theme_color(dpg.mvPlotCol_MarkerFill, [0, 0, 255], category=dpg.mvThemeCat_Plots)
                 dpg.add_theme_color(dpg.mvPlotCol_MarkerOutline, [0, 0, 255], category=dpg.mvThemeCat_Plots)
 
+        # Blue theme for selected points
+        with dpg.theme(tag=self.theme_blue_selected):
+            with dpg.theme_component(dpg.mvScatterSeries):
+                dpg.add_theme_color(dpg.mvPlotCol_MarkerFill, [30, 144, 255], category=dpg.mvThemeCat_Plots)
+                dpg.add_theme_color(dpg.mvPlotCol_MarkerOutline, [30, 144, 255], category=dpg.mvThemeCat_Plots)
+
     def update_plot(self):
         """Update the plot with current curve data"""
         # Check if the plot exists before updating
@@ -145,10 +210,6 @@ class CurvesPanel:
             x_values = [float(point[0]) for point in self.curves[channel_key]]
             y_values = [float(point[1]) for point in self.curves[channel_key]]
             
-            # Debug output to verify data
-            print(f"X values: {x_values}")
-            print(f"Y values: {y_values}")
-            
             # Get theme based on channel
             theme_tag = self.theme_rgb  # Default for RGB
             if self.current_channel == "R":
@@ -165,9 +226,13 @@ class CurvesPanel:
             if dpg.does_item_exist(self.points_tag):
                 dpg.delete_item(self.points_tag)
             
+            # Delete selected point marker if it exists
+            selected_tag = f"{self.points_tag}_selected"
+            if dpg.does_item_exist(selected_tag):
+                dpg.delete_item(selected_tag)
+            
             # Ensure the axis exists before adding series
             if not dpg.does_item_exist(self.y_axis_tag):
-                print(f"Y-axis with tag {self.y_axis_tag} does not exist!")
                 return
                 
             # Ensure there are no duplicate x values (could cause issues)
@@ -179,21 +244,26 @@ class CurvesPanel:
                     unique_points.append((x, y_values[i]))
             
             if len(unique_points) < len(x_values):
-                print(f"Warning: Removed {len(x_values) - len(unique_points)} duplicate x values")
                 x_values = [p[0] for p in unique_points]
                 y_values = [p[1] for p in unique_points]
             
             # Ensure there are at least 2 points for a valid line
             if len(x_values) < 2:
-                print("Warning: Not enough points for a valid curve, adding default end points")
                 x_values = [0.0, 255.0]
                 y_values = [0.0, 255.0]
             
+            # Generate curve data based on interpolation mode
+            if self.current_interpolation == "Spline" and len(x_values) >= 3:
+                # Generate smooth spline curve
+                curve_x, curve_y = self._generate_spline_curve(x_values, y_values)
+            else:
+                # Use linear interpolation (default)
+                curve_x, curve_y = x_values, y_values
+            
             # Add the new line series
             dpg.add_line_series(
-                x=x_values, 
-                y=y_values, 
-                label=f"{self.current_channel} Curve",
+                x=curve_x, 
+                y=curve_y, 
                 tag=self.line_tag,
                 parent=self.y_axis_tag
             )
@@ -205,21 +275,273 @@ class CurvesPanel:
                 x=x_values,
                 y=y_values,
                 tag=self.points_tag,
-                label="Control Points",
                 parent=self.y_axis_tag
             )
             # Bind theme to scatter points
             dpg.bind_item_theme(self.points_tag, theme_tag)
             
+            # Add a larger highlight for selected point if any
+            if self.selected_point is not None:
+                idx, channels = self.selected_point
+                # Use the channel we're currently displaying for the selected point
+                if 0 <= idx < len(self.curves[channel_key]):
+                    selected_x, selected_y = self.curves[channel_key][idx]
+                    dpg.add_scatter_series(
+                        x=[selected_x],
+                        y=[selected_y],
+                        tag=f"{self.points_tag}_selected",
+                        parent=self.y_axis_tag
+                    )
+                    # Use blue theme for the selected point to make it stand out
+                    dpg.bind_item_theme(f"{self.points_tag}_selected", self.theme_blue_selected)
+            
         except Exception as e:
-            print(f"Error updating curve plot: {e}")
             import traceback
             traceback.print_exc()
+    
+    def _generate_spline_curve(self, x_values, y_values):
+        """Generate a smooth spline curve through the control points"""
+        try:
+            from scipy.interpolate import CubicSpline
+            
+            # Create a cubic spline interpolation
+            cs = CubicSpline(x_values, y_values, bc_type='natural')
+            
+            # Generate smooth curve points
+            x_smooth = np.linspace(x_values[0], x_values[-1], 100)
+            y_smooth = cs(x_smooth)
+            
+            # Clamp y values to valid range [0, 255]
+            y_smooth = np.clip(y_smooth, 0, 255)
+            
+            return x_smooth.tolist(), y_smooth.tolist()
+            
+        except ImportError:
+            # Fallback to linear interpolation if scipy is not available
+            print("Warning: scipy not available, falling back to linear interpolation")
+            return x_values, y_values
+        except Exception as e:
+            print(f"Error generating spline curve: {e}")
+            return x_values, y_values
     
     def change_channel(self, sender, app_data, user_data):
         """Change the current channel"""
         self.current_channel = app_data  # Now app_data contains the selected value
         self.update_plot()
+    
+    def change_interpolation_mode(self, sender, app_data, user_data=None):
+        """Change the interpolation mode between Linear and Spline"""
+        self.current_interpolation = app_data
+        self.update_plot()
+        # Notify of changes to update the image
+        self.callback(sender, app_data, user_data)
+    
+    def on_simple_click(self, sender, app_data):
+        """Simple click handler that checks if over plot"""
+        
+        if not self.is_mouse_over_plot():
+            return
+        
+        # Get plot coordinates
+        x, y = self.get_mouse_plot_coordinates()
+        
+        # Clamp values
+        x = max(0, min(255, x))
+        y = max(0, min(255, y))
+        
+        # Get the current channel key
+        channel_key = self.current_channel.lower()
+        check_key = "r" if channel_key == "rgb" else channel_key
+        channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
+        
+        # Check if we're clicking near an existing point
+        hit_radius = 30
+        for idx, point in enumerate(self.curves[check_key]):
+            distance = abs(point[0] - x) + abs(point[1] - y)
+            if distance < hit_radius:
+                # Start dragging this point
+                self.dragging_point = (idx, channels_to_modify)
+                return
+        
+        # If no point found, add a new one
+        for ch in channels_to_modify:
+            self.curves[ch].append((x, y))
+        
+        # Update the plot
+        self.update_plot()
+        
+        # Notify of changes
+        self.callback(sender, app_data, None)
+    
+    def on_simple_drag(self, sender, app_data):
+        """Simple drag handler"""
+        if self.dragging_point is None:
+            return
+            
+        if not self.is_mouse_over_plot():
+            return
+            
+        # Get mouse position in plot coordinates
+        x, y = self.get_mouse_plot_coordinates()
+        
+        # Clamp values
+        x = max(0, min(255, x))
+        y = max(0, min(255, y))
+        
+        # Update point in all affected channels
+        idx, channels = self.dragging_point
+        for ch in channels:
+            if 0 <= idx < len(self.curves[ch]):
+                # Special cases for endpoints
+                if idx == 0:  # First point
+                    x = 0  # Keep at 0
+                elif idx == len(self.curves[ch]) - 1:  # Last point
+                    x = 255  # Keep at 255
+                old_point = self.curves[ch][idx]
+                self.curves[ch][idx] = (x, y)
+        
+        # Update the plot
+        self.update_plot()
+        
+        # Notify of changes
+        self.callback(sender, app_data, None)
+    
+    def on_simple_release(self, sender, app_data):
+        """Simple release handler"""
+        if self.dragging_point is not None:
+            self.dragging_point = None
+    
+    def on_plot_clicked(self, sender, app_data):
+        """Handle clicks specifically on the plot area"""
+        
+        # Get mouse position relative to the plot
+        mouse_pos = dpg.get_mouse_pos()
+        
+        # Check if we're actually over the plot
+        if not self.is_mouse_over_plot():
+            return
+            
+        # Get plot coordinates
+        x, y = self.get_mouse_plot_coordinates()
+        
+        # Clamp values
+        x = max(0, min(255, x))
+        y = max(0, min(255, y))
+        
+        # Get the current channel key
+        channel_key = self.current_channel.lower()
+        
+        # Fix: Use "r" for point checking when "rgb" is selected
+        check_key = "r" if channel_key == "rgb" else channel_key
+        
+        # If RGB selected, modify all channels
+        channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
+        
+        # Check if we're clicking near an existing point
+        hit_radius = 30
+        for idx, point in enumerate(self.curves[check_key]):
+            distance = abs(point[0] - x) + abs(point[1] - y)
+            if distance < hit_radius:
+                # Start dragging this point
+                self.dragging_point = (idx, channels_to_modify)
+                return
+        
+        # If no point found, add a new one
+        for ch in channels_to_modify:
+            self.curves[ch].append((x, y))
+        
+        # Update the plot
+        self.update_plot()
+        
+        # Notify of changes
+        self.callback(sender, app_data, None)
+    
+    def on_global_drag(self, sender, app_data):
+        """Handle dragging when a point is selected"""
+        if self.dragging_point is None:
+            return
+            
+        # Only process if mouse is over plot
+        if not self.is_mouse_over_plot():
+            return
+            
+        # Get mouse position in plot coordinates
+        x, y = self.get_mouse_plot_coordinates()
+        
+        # Clamp values
+        x = max(0, min(255, x))
+        y = max(0, min(255, y))
+        
+        # Update point in all affected channels
+        idx, channels = self.dragging_point
+        for ch in channels:
+            if 0 <= idx < len(self.curves[ch]):
+                # Special cases for endpoints
+                if idx == 0:  # First point
+                    x = 0  # Keep at 0
+                elif idx == len(self.curves[ch]) - 1:  # Last point
+                    x = 255  # Keep at 255
+                old_point = self.curves[ch][idx]
+                self.curves[ch][idx] = (x, y)
+        
+        # Update the plot
+        self.update_plot()
+        
+        # Notify of changes
+        self.callback(sender, app_data, None)
+    
+    def on_global_release(self, sender, app_data):
+        """Handle mouse release to stop dragging"""
+        if self.dragging_point is not None:
+            self.dragging_point = None
+    
+    def on_plot_hover(self, sender, app_data):
+        """Handle hover over the plot"""
+        # Could implement hover effects here if needed
+        pass
+    
+    def on_plot_click(self, sender, app_data):
+        """Handle plot clicks - this gets called when the plot is clicked"""
+        
+        # Use the app_data which should contain plot coordinates
+        if app_data and len(app_data) >= 2:
+            # app_data should contain [x, y] coordinates in plot space
+            x, y = app_data[0], app_data[1]
+            
+            # Convert to integer curve coordinates [0,255]
+            x = max(0, min(255, int(x)))
+            y = max(0, min(255, int(y)))
+            
+            
+            # Get the current channel key
+            channel_key = self.current_channel.lower()
+            
+            # Fix: Use "r" for point checking when "rgb" is selected
+            check_key = "r" if channel_key == "rgb" else channel_key
+            
+            # If RGB selected, modify all channels
+            channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
+            
+            # Increase hit-test radius - make it easier to select points
+            hit_radius = 30
+            
+            # Check if clicked near an existing point
+            for idx, point in enumerate(self.curves[check_key]):
+                distance = abs(point[0] - x) + abs(point[1] - y)  # Manhattan distance
+                if distance < hit_radius:
+                    # Found a point near click - start dragging
+                    self.dragging_point = (idx, channels_to_modify)
+                    return
+            
+            # If no point found, add a new one to each affected channel
+            for ch in channels_to_modify:
+                self.curves[ch].append((x, y))
+            
+            # Update the plot
+            self.update_plot()
+            
+            # Notify of changes
+            self.callback(sender, app_data, None)
     
     def on_click(self, sender, app_data):
         """Handle mouse click to add or select a point"""
@@ -243,11 +565,12 @@ class CurvesPanel:
         channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
         
         # Increase hit-test radius - make it easier to select points
-        hit_radius = 25  # Increased from 10
+        hit_radius = 30  # Increased from 25
         
         # Check if clicked near an existing point - use check_key instead of channel_key
         for idx, point in enumerate(self.curves[check_key]):
-            if abs(point[0] - x) < hit_radius and abs(point[1] - y) < hit_radius:
+            distance = abs(point[0] - x) + abs(point[1] - y)  # Manhattan distance
+            if distance < hit_radius:
                 # Found a point near click
                 self.dragging_point = (idx, channels_to_modify)
                 return
@@ -283,6 +606,7 @@ class CurvesPanel:
                     x = 0  # Keep at 0
                 elif idx == len(self.curves[ch]) - 1:  # Last point
                     x = 255  # Keep at 255
+                old_point = self.curves[ch][idx]
                 self.curves[ch][idx] = (x, y)
         
         # Update the plot
@@ -322,51 +646,154 @@ class CurvesPanel:
     
     def get_mouse_plot_coordinates(self):
         """Convert screen coordinates to plot coordinates"""
-        # Get mouse position and plot position/size
-        mouse_pos = dpg.get_mouse_pos()
-        plot_pos = dpg.get_item_rect_min(self.plot_tag)
-        plot_size = dpg.get_item_rect_size(self.plot_tag)
-        
-        # Get the actual plotting area (accounting for axis labels, etc.)
-        # This is approximate and may need adjustment
-        plot_padding_x = 40  # Estimated padding for y-axis labels
-        plot_padding_y = 30  # Estimated padding for x-axis labels
-        
-        # Calculate effective plot area
-        effective_width = plot_size[0] - plot_padding_x
-        effective_height = plot_size[1] - plot_padding_y
-        effective_x = plot_pos[0] + plot_padding_x
-        effective_y = plot_pos[1]
-        
-        # Convert mouse position to normalized coordinates [0,1]
-        # Use effective plot area for more accurate coordinates
-        if effective_width <= 0 or effective_height <= 0:
-            return 0, 0
+        try:
+            # Get mouse position using the same method that works for boundary detection
+            mouse_pos = dpg.get_mouse_pos(local=False)  # Use global coordinates for consistency
             
-        x_norm = (mouse_pos[0] - effective_x) / effective_width
-        y_norm = 1.0 - (mouse_pos[1] - effective_y) / effective_height
-        
-        # Convert to curve coordinates [0,255]
-        x = int(x_norm * 255)
-        y = int(y_norm * 255)
-        
-        return x, y
+            # Get the plot's actual bounds
+            if not dpg.does_item_exist(self.plot_tag):
+                return 0, 0
+                
+            plot_rect_min = dpg.get_item_rect_min(self.plot_tag)
+            plot_rect_max = dpg.get_item_rect_max(self.plot_tag)
+            plot_rect_size = dpg.get_item_rect_size(self.plot_tag)
+            
+            # Calculate relative position within the entire plot area
+            relative_x = mouse_pos[0] - plot_rect_min[0]
+            relative_y = mouse_pos[1] - plot_rect_min[1]
+            
+            # Check if the axes exist and get their actual limits
+            if not dpg.does_item_exist(self.x_axis_tag) or not dpg.does_item_exist(self.y_axis_tag):
+                return 0, 0
+            
+            # Get the actual axis limits (should be 0-255 for both)
+            x_limits = dpg.get_axis_limits(self.x_axis_tag)
+            y_limits = dpg.get_axis_limits(self.y_axis_tag)
+            
+            # Calculate the actual plot area (excluding margins/labels)
+            # For DearPyGui plots, we need to account for the plot margins
+            # These are approximate values that work well with DearPyGui
+            left_margin = 60    # Space for Y axis labels
+            right_margin = 30   # Right padding
+            top_margin = 30     # Top padding 
+            bottom_margin = 50  # Space for X axis labels
+            
+            # Calculate the actual plotting area
+            plot_area_width = plot_rect_size[0] - left_margin - right_margin
+            plot_area_height = plot_rect_size[1] - top_margin - bottom_margin
+            
+            # Adjust relative position to account for margins
+            plot_relative_x = relative_x - left_margin
+            plot_relative_y = relative_y - top_margin
+            
+            
+            # Check if we're within the actual plot area
+            if (plot_relative_x < 0 or plot_relative_x > plot_area_width or 
+                plot_relative_y < 0 or plot_relative_y > plot_area_height):
+                return 0, 0
+            
+            # Convert to normalized coordinates [0,1] within the plot area
+            if plot_area_width <= 0 or plot_area_height <= 0:
+                return 0, 0
+            
+            x_norm = plot_relative_x / plot_area_width
+            y_norm = 1.0 - (plot_relative_y / plot_area_height)  # Flip Y coordinate
+            
+            
+            # Clamp to [0,1] range
+            x_norm = max(0.0, min(1.0, x_norm))
+            y_norm = max(0.0, min(1.0, y_norm))
+            
+            # Convert to plot data coordinates using axis limits
+            x_range = x_limits[1] - x_limits[0]  # Should be 255 - 0 = 255
+            y_range = y_limits[1] - y_limits[0]  # Should be 255 - 0 = 255
+            
+            x = int(x_limits[0] + (x_norm * x_range))
+            y = int(y_limits[0] + (y_norm * y_range))
+            
+            
+            return x, y
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return 0, 0
     
     def is_mouse_over_plot(self):
         """Check if mouse is over the plot area"""
-        # Get mouse position
-        mouse_pos = dpg.get_mouse_pos()
-        
-        # Get plot position and size
-        if not dpg.does_item_exist(self.plot_tag):
-            return False
+        try:
+            # Use the same coordinate system as get_mouse_plot_coordinates for consistency
+            mouse_pos = dpg.get_mouse_pos(local=False)  # Global coordinates
             
-        plot_rect_min = dpg.get_item_rect_min(self.plot_tag)
-        plot_rect_max = dpg.get_item_rect_max(self.plot_tag)
+            # Get plot position and size
+            if not dpg.does_item_exist(self.plot_tag):
+                return False
+            
+            # Get plot bounds in screen coordinates
+            plot_rect_min = dpg.get_item_rect_min(self.plot_tag)
+            plot_rect_max = dpg.get_item_rect_max(self.plot_tag)
+            
+            # Check if mouse is within plot bounds with a small tolerance
+            tolerance = 5
+            is_over = (plot_rect_min[0] - tolerance <= mouse_pos[0] <= plot_rect_max[0] + tolerance and 
+                      plot_rect_min[1] - tolerance <= mouse_pos[1] <= plot_rect_max[1] + tolerance)
+            
+            
+            return is_over
+            
+        except Exception as e:
+            return False
+    
+    def test_click_simulation(self, sender=None, app_data=None, user_data=None):
+        """Test clicking functionality by simulating a click at specific coordinates"""
         
-        # Check if mouse is within plot bounds
-        return (plot_rect_min[0] <= mouse_pos[0] <= plot_rect_max[0] and 
-                plot_rect_min[1] <= mouse_pos[1] <= plot_rect_max[1])
+        # Simulate a click at plot coordinates (100, 150)
+        x, y = 100, 150
+        
+        # Get the current channel key
+        channel_key = self.current_channel.lower()
+        check_key = "r" if channel_key == "rgb" else channel_key
+        channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
+        
+        # Check if we're clicking near an existing point
+        hit_radius = 30
+        point_found = False
+        
+        for idx, point in enumerate(self.curves[check_key]):
+            distance = abs(point[0] - x) + abs(point[1] - y)
+            if distance < hit_radius:
+                point_found = True
+                break
+        
+        if not point_found:
+            # Add a new point
+            for ch in channels_to_modify:
+                self.curves[ch].append((x, y))
+            
+            # Update the plot
+            self.update_plot()
+            
+            # Notify of changes
+            self.callback(sender, app_data, user_data)
+    
+    def test_add_point(self, sender=None, app_data=None, user_data=None):
+        """Test method to add a point and verify curve functionality"""
+        
+        # Get current channel
+        channel_key = self.current_channel.lower()
+        channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
+        
+        # Add a test point at (64, 192) to create a curve
+        for ch in channels_to_modify:
+            # Insert the point and sort
+            self.curves[ch].append((64, 192))
+            self.curves[ch] = sorted(self.curves[ch], key=lambda p: p[0])
+        
+        # Update the plot
+        self.update_plot()
+        
+        # Notify of changes
+        self.callback(sender, app_data, user_data)
     
     def reset_curve(self, sender=None, app_data=None, user_data=None):
         """Reset the curve to default (linear)"""
@@ -394,4 +821,102 @@ class CurvesPanel:
     
     def get_curves(self):
         """Return the curves data for image processing"""
-        return self.curves
+        return {
+            "curves": self.curves,
+            "interpolation_mode": self.current_interpolation
+        }
+    
+    def on_plot_callback(self, sender, app_data):
+        """Direct plot callback - receives plot coordinates directly"""
+        
+        # Check if app_data contains plot coordinates
+        if app_data and isinstance(app_data, (list, tuple)) and len(app_data) >= 2:
+            x, y = app_data[0], app_data[1]
+            
+            # Ensure coordinates are within valid range
+            x = max(0, min(255, int(x)))
+            y = max(0, min(255, int(y)))
+            
+            self.handle_plot_interaction(x, y)
+        else:
+            # Fall back to mouse coordinate conversion if needed
+            x, y = self.get_mouse_plot_coordinates()
+            if x >= 0 and y >= 0:  # Only handle if coordinates are valid
+                self.handle_plot_interaction(x, y)
+        
+    def on_plot_clicked_direct(self, sender, app_data):
+        """Direct plot click handler - simplified without double-click logic"""
+        
+        # Get coordinates and handle the interaction
+        x, y = self.get_mouse_plot_coordinates()
+        
+        # Handle the click
+        self.handle_plot_interaction(int(x), int(y))
+            
+    def on_plot_hover_direct(self, sender, app_data):
+        """Direct plot hover handler"""
+        # We can use this for hover effects if needed
+        pass
+    
+    def delete_selected_point(self, sender=None, app_data=None, user_data=None):
+        """Delete the currently selected point (if any)"""
+        if self.selected_point is None:
+            return
+            
+        idx, channels = self.selected_point
+        
+        # Get current channel for checking endpoint restrictions
+        channel_key = self.current_channel.lower()
+        check_key = "r" if channel_key == "rgb" else channel_key
+        
+        # Don't allow deletion of first and last points (endpoints)
+        if idx == 0 or idx == len(self.curves[check_key]) - 1:
+            self.selected_point = None
+            return
+        
+        # Delete the point from all affected channels
+        for ch in channels:
+            if 0 <= idx < len(self.curves[ch]):
+                del self.curves[ch][idx]
+        
+        # Clear selection
+        self.selected_point = None
+        
+        # Update the plot
+        self.update_plot()
+        
+        # Notify of changes
+        self.callback(None, None, None)
+    
+    def handle_plot_interaction(self, x, y):
+        """Handle plot interaction with given coordinates"""
+        
+        # Get the current channel key
+        channel_key = self.current_channel.lower()
+        check_key = "r" if channel_key == "rgb" else channel_key
+        channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
+        
+        # Check if clicking near an existing point
+        hit_radius = 30
+        for idx, point in enumerate(self.curves[check_key]):
+            distance = abs(point[0] - x) + abs(point[1] - y)
+            if distance < hit_radius:
+                self.dragging_point = (idx, channels_to_modify)
+                self.selected_point = (idx, channels_to_modify)  # Also track as selected
+                
+                # Update plot to show selection
+                self.update_plot()
+                return
+        
+        # If no point found, add a new one
+        for ch in channels_to_modify:
+            self.curves[ch].append((x, y))
+        
+        # Clear selection when adding new point
+        self.selected_point = None
+        
+        # Update the plot
+        self.update_plot()
+        
+        # Notify of changes
+        self.callback(None, None, None)

@@ -38,9 +38,20 @@ def update_image_callback():
     processor.temperature = params.get('temperature', 0)
     
     updated_image = processor.apply_all_edits()
-    curves = params.get('curves', None)
-    if curves:
-        updated_image = processor.apply_rgb_curves(updated_image, curves)
+    curves_data = params.get('curves', None)
+    if curves_data:
+        # Handle both old and new curve formats
+        if isinstance(curves_data, dict) and 'curves' in curves_data:
+            # New format with interpolation mode
+            curves = curves_data['curves']
+            interpolation_mode = curves_data.get('interpolation_mode', 'Linear')
+        else:
+            # Old format (backward compatibility)
+            curves = curves_data
+            interpolation_mode = 'Linear'
+        
+        # Apply curves to the processed image
+        updated_image = processor.apply_rgb_curves(updated_image, curves, interpolation_mode)
     
     crop_rotate_ui.original_image = updated_image
     crop_rotate_ui.update_image(None, None, None)
@@ -125,6 +136,12 @@ def on_mouse_release(sender, app_data):
         return main_window.on_mouse_release(sender, app_data)
     return False
 
+def on_key_press(sender, app_data):
+    """Handle keyboard events"""
+    if main_window:
+        return main_window.on_key_press(sender, app_data)
+    return False
+
 def main():
     global main_window
     dpg.create_context()
@@ -162,6 +179,7 @@ def main():
             dpg.add_mouse_drag_handler(callback=on_mouse_drag)
             dpg.add_mouse_release_handler(callback=on_mouse_release)
             dpg.add_mouse_wheel_handler(callback=main_window.on_mouse_wheel)  # Use existing wheel handler
+            dpg.add_key_press_handler(callback=on_key_press)  # Add keyboard support
 
     dpg.show_viewport()
     dpg.start_dearpygui()
