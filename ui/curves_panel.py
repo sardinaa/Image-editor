@@ -403,6 +403,10 @@ class CurvesPanel:
         # Update the plot
         self.update_plot()
         
+        # For real-time histogram updates during drag, call the histogram callback if available
+        if hasattr(self, 'realtime_histogram_callback') and self.realtime_histogram_callback:
+            self.realtime_histogram_callback()
+        
         # Notify of changes
         self.callback(sender, app_data, None)
     
@@ -612,12 +616,21 @@ class CurvesPanel:
         # Update the plot
         self.update_plot()
         
+        # For real-time histogram updates during drag, call the histogram callback if available
+        if hasattr(self, 'realtime_histogram_callback') and self.realtime_histogram_callback:
+            self.realtime_histogram_callback()
+        
         # Notify of changes - Fix: Pass all required parameters to callback
         self.callback(sender, app_data, None)
     
     def on_release(self, sender, app_data):
         """Handle mouse release"""
+        was_dragging = self.dragging_point is not None
         self.dragging_point = None
+        
+        # Update histogram when user finishes adjusting curves
+        if was_dragging and hasattr(self, '_histogram_update_callback'):
+            self._histogram_update_callback()
     
     def on_mouse_move(self, sender, app_data):
         """Handle mouse movement for hover effects"""

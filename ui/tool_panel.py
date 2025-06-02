@@ -1,5 +1,6 @@
 import dearpygui.dearpygui as dpg
 from ui.curves_panel import CurvesPanel
+from ui.histogram_panel import HistogramPanel
 
 class ToolPanel:
     def __init__(self, callback, crop_and_rotate_ref, main_window=None):
@@ -11,9 +12,17 @@ class ToolPanel:
                       "b": [(0, 0), (128, 128), (255, 255)]}
         self.panel_tag = "tool_panel"
         self.curves_panel = None
+        self.histogram_panel = None  # Add histogram panel reference
 
     def draw(self):
         with dpg.group(horizontal=False):
+            # Add histogram panel at the top
+            self.histogram_panel = HistogramPanel()
+            self.histogram_panel.show()
+            
+            dpg.add_separator()
+            dpg.add_spacer(height=2)
+            
             dpg.add_text("Basic Editing Tools", color=[176, 204, 255])
             dpg.add_separator()
             dpg.add_spacer(height=2)
@@ -64,7 +73,13 @@ class ToolPanel:
             dpg.add_separator()
             dpg.add_spacer(height=2)
             dpg.add_text("Masks", color=[176, 204, 255])
-            dpg.add_listbox(items=[], tag="mask_list", callback=self._mask_selected, num_items=2)
+            # Mask management buttons
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Delete Mask", tag="delete_mask_btn", callback=self._delete_selected_mask, width=85, height=20)
+                dpg.add_button(label="Rename Mask", tag="rename_mask_btn", callback=self._rename_selected_mask, width=85, height=20)
+            dpg.add_listbox(items=[], tag="mask_list", callback=self._mask_selected, num_items=6)
+            
+            
 
     def _param_changed(self, sender, app_data, user_data):
         # Sync curves from curves panel if it exists
@@ -124,35 +139,117 @@ class ToolPanel:
 
     def _mask_selected(self, sender, app_data, user_data):
         # When a mask is selected, show only that mask and hide others
-        # app_data contains a string like "Mask 1", extract the index from it
-        if isinstance(app_data, str) and app_data.startswith("Mask "):
+        # app_data contains the selected mask name, we need to find its index
+        if not app_data:
+            return
+            
+        # Get the current mask list to find the index
+        if dpg.does_item_exist("mask_list"):
+            current_items = dpg.get_item_configuration("mask_list")["items"]
             try:
-                # Extract the number from "Mask X" and convert to zero-based index
-                selected_index = int(app_data.split("Mask ")[1]) - 1
-                print(f"Selected mask: {app_data}, converted to index: {selected_index}")
+                selected_index = current_items.index(app_data)
+                print(f"Selected mask: {app_data}, index: {selected_index}")
                 
                 # Update mask visibility if main_window is available
                 if self.main_window:
                     self.main_window.show_selected_mask(selected_index)
                 else:
                     print("Main window reference not available")
-            except (ValueError, IndexError) as e:
-                print(f"Error parsing mask index from '{app_data}': {e}")
+            except ValueError as e:
+                print(f"Error finding mask index for '{app_data}': {e}")
         else:
-            # Handle case where app_data is already an index
-            selected_index = app_data
-            print(f"Selected mask index: {selected_index}")
-            
-            # Update mask visibility if main_window is available
-            if self.main_window:
-                self.main_window.show_selected_mask(selected_index)
-            else:
-                print("Main window reference not available")
+            print("Mask list widget does not exist")
     
-    def update_masks(self, masks):
-        # Create listbox entries based on the number of masks
-        items = [f"Mask {idx+1}" for idx in range(len(masks))]
+    def update_masks(self, masks, mask_names=None):
+        # Create listbox entries based on custom names or default naming
+        if mask_names and len(mask_names) >= len(masks):
+            items = mask_names[:len(masks)]
+        else:
+            items = [f"Mask {idx+1}" for idx in range(len(masks))]
+        
         if dpg.does_item_exist("mask_list"):
             dpg.configure_item("mask_list", items=items)
         else:
             print("Mask list widget does not exist.")
+    
+    def update_histogram(self, image):
+        """Update the histogram with new image data"""
+        if self.histogram_panel:
+            self.histogram_panel.update_histogram(image)
+    
+    def _delete_selected_mask(self, sender, app_data, user_data):
+        """Delete the currently selected mask"""
+        # Get the currently selected mask from the listbox
+        if not dpg.does_item_exist("mask_list"):
+            return
+            
+        current_selection = dpg.get_value("mask_list")
+        if not current_selection:
+            print("No mask selected for deletion")
+            return
+        
+        # Find the index of the selected mask in the list
+        current_items = dpg.get_item_configuration("mask_list")["items"]
+        try:
+            selected_index = current_items.index(current_selection)
+            print(f"Deleting mask: {current_selection}, index: {selected_index}")
+            
+            # Delete the mask through main window
+            if self.main_window:
+                self.main_window.delete_mask(selected_index)
+            else:
+                print("Main window reference not available")
+        except ValueError as e:
+            print(f"Error finding mask index for '{current_selection}': {e}")
+    
+    def _rename_selected_mask(self, sender, app_data, user_data):
+        """Rename the currently selected mask"""
+        # Get the currently selected mask from the listbox
+        if not dpg.does_item_exist("mask_list"):
+            return
+            
+        current_selection = dpg.get_value("mask_list")
+        if not current_selection:
+            print("No mask selected for renaming")
+            return
+        
+        # Find the index of the selected mask in the list
+        current_items = dpg.get_item_configuration("mask_list")["items"]
+        try:
+            selected_index = current_items.index(current_selection)
+            print(f"Renaming mask: {current_selection}, index: {selected_index}")
+            
+            # Show rename dialog
+            self._show_rename_dialog(selected_index, current_selection)
+        except ValueError as e:
+            print(f"Error finding mask index for '{current_selection}': {e}")
+    
+    def _show_rename_dialog(self, mask_index, current_name):
+        """Show a dialog to rename the mask"""
+        # Delete existing dialog if it exists
+        if dpg.does_item_exist("rename_mask_window"):
+            dpg.delete_item("rename_mask_window")
+        
+        # Create a modal window for renaming
+        with dpg.window(label="Rename Mask", modal=True, tag="rename_mask_window", 
+                       width=300, height=120, pos=[400, 300]):
+            dpg.add_text(f"Rename: {current_name}")
+            dpg.add_input_text(label="New name", tag="mask_rename_input", 
+                              default_value=current_name, width=200)
+            dpg.add_spacer(height=5)
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="OK", callback=lambda: self._apply_rename(mask_index), width=80)
+                dpg.add_button(label="Cancel", callback=lambda: dpg.delete_item("rename_mask_window"), width=80)
+    
+    def _apply_rename(self, mask_index):
+        """Apply the rename operation"""
+        if not dpg.does_item_exist("mask_rename_input"):
+            return
+            
+        new_name = dpg.get_value("mask_rename_input")
+        if new_name and new_name.strip() and self.main_window:
+            self.main_window.rename_mask(mask_index, new_name.strip())
+        
+        # Close the window
+        if dpg.does_item_exist("rename_mask_window"):
+            dpg.delete_item("rename_mask_window")

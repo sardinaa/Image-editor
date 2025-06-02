@@ -25,6 +25,10 @@ class ImageSegmenter:
             print("Converting RGBA image to RGB")
             image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
             
+        # Store original dimensions for scaling masks back
+        original_height, original_width = image.shape[:2]
+        print(f"Original image dimensions: {original_width}x{original_height}")
+            
         # Resize image so that its long side is exactly 1024 pixels.
         height, width = image.shape[:2]
         if height >= width:
@@ -44,6 +48,35 @@ class ImageSegmenter:
         
         # Pass the resized image in HWC (3-dimensional) format to the generator.
         masks = self.mask_generator.generate(resized_image)
+        
+        print(f"Generated {len(masks)} masks before scaling")
+        
+        # Scale all masks back to original image dimensions
+        for i, mask in enumerate(masks):
+            if 'segmentation' in mask:
+                original_mask_shape = mask['segmentation'].shape
+                scaled_mask = cv2.resize(mask['segmentation'].astype(np.uint8), 
+                                       (original_width, original_height), 
+                                       interpolation=cv2.INTER_NEAREST).astype(bool)
+                mask['segmentation'] = scaled_mask
+                print(f"Mask {i}: scaled from {original_mask_shape} to {scaled_mask.shape}")
+                
+                # Update area to reflect the scaled mask
+                mask['area'] = int(scaled_mask.sum())
+                
+                # Scale bbox coordinates back to original image
+                if 'bbox' in mask:
+                    scale_w = original_width / new_width
+                    scale_h = original_height / new_height
+                    bbox = mask['bbox']
+                    mask['bbox'] = [
+                        int(bbox[0] * scale_w),
+                        int(bbox[1] * scale_h),
+                        int(bbox[2] * scale_w),
+                        int(bbox[3] * scale_h)
+                    ]
+        
+        print(f"Returning {len(masks)} masks scaled to original image dimensions")
         return masks
         
     def segment_with_box(self, image, box):
@@ -60,6 +93,11 @@ class ImageSegmenter:
         # Convert RGBA image to RGB if needed
         if image.shape[-1] == 4:
             image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
+        
+        # Store original dimensions for scaling masks back
+        original_height, original_width = image.shape[:2]
+        print(f"Segment with box - Original image dimensions: {original_width}x{original_height}")
+        print(f"Input box: {box}")
         
         # Resize image as done in segment()
         height, width = image.shape[:2]
@@ -95,16 +133,35 @@ class ImageSegmenter:
         # Format results to match the automatic segmentation format
         result_masks = []
         for i, (mask, score) in enumerate(zip(masks, scores)):
+            original_mask_shape = mask.shape
+            # Scale mask back to original image dimensions
+            scaled_mask = cv2.resize(mask.astype(np.uint8), 
+                                   (original_width, original_height), 
+                                   interpolation=cv2.INTER_NEAREST).astype(bool)
+            
+            print(f"Box mask {i}: scaled from {original_mask_shape} to {scaled_mask.shape}, score: {score}")
+            
+            # Scale bbox back to original image dimensions
+            original_scale_w = original_width / new_width
+            original_scale_h = original_height / new_height
+            original_bbox = [
+                int(scaled_box[0] * original_scale_w),
+                int(scaled_box[1] * original_scale_h),
+                int(scaled_box[2] * original_scale_w),
+                int(scaled_box[3] * original_scale_h)
+            ]
+            
             result_masks.append({
-                'segmentation': mask,
-                'area': int(mask.sum()),
-                'bbox': scaled_box,
+                'segmentation': scaled_mask,
+                'area': int(scaled_mask.sum()),
+                'bbox': original_bbox,
                 'predicted_iou': float(score),
                 'point_coords': [],
                 'stability_score': float(score),
-                'crop_box': [0, 0, new_width, new_height]
+                'crop_box': [0, 0, original_width, original_height]
             })
         
+        print(f"Returning {len(result_masks)} box-generated masks scaled to original image dimensions")
         # Sort by score
         result_masks = sorted(result_masks, key=lambda x: x['predicted_iou'], reverse=True)
         return result_masks

@@ -17,6 +17,7 @@ class MainWindow:
         self.central_panel_tag = "Central Panel"
         self.right_panel_tag = "right_panel"
         self.layer_masks = []  # Store masks
+        self.mask_names = []  # Store custom names for masks
         
         # Box selection state
         self.box_selection_mode = False
@@ -25,6 +26,9 @@ class MainWindow:
         self.box_end = [0, 0]
         self.box_rect_tag = "box_selection_rect"
         self.draw_list_tag = "box_selection_draw_list"
+        
+        # Segmentation instance - created once to avoid GPU memory issues
+        self.segmenter = None
 
     def setup(self):
         viewport_width = dpg.get_viewport_client_width()
@@ -64,6 +68,7 @@ class MainWindow:
                     dpg.add_menu_item(label="Automatic Segment", callback=self.segment_current_image)
                     dpg.add_menu_item(label="Box Selection Mode", callback=self.toggle_box_selection_mode, 
                                      check=True, tag="box_selection_mode_menu")
+                    dpg.add_menu_item(label="Clear All Masks", callback=self.clear_all_masks)
 
     def create_central_panel_content(self):
         # Añadir el image_series y los manejadores cuando tengamos crop_rotate_ui
@@ -288,6 +293,18 @@ class MainWindow:
         if self.tool_panel:
             return self.tool_panel.get_parameters()
         return {}
+    
+    def get_segmenter(self):
+        """Get or create the segmenter instance. Created once to avoid GPU memory issues."""
+        if self.segmenter is None:
+            try:
+                print("Creating ImageSegmenter instance...")
+                self.segmenter = ImageSegmenter()
+                print("ImageSegmenter instance created successfully")
+            except Exception as e:
+                print(f"Error creating ImageSegmenter: {e}")
+                return None
+        return self.segmenter
 
     def set_crop_rotate_ui(self, crop_rotate_ui):
         self.crop_rotate_ui = crop_rotate_ui
@@ -302,7 +319,7 @@ class MainWindow:
     def toggle_box_selection_mode(self, sender, app_data):
         """Toggle the box selection mode on/off"""
         self.box_selection_mode = dpg.get_value(sender)
-        print(f"Box selection mode: {self.box_selection_mode}")
+        print(f"Box selection mode: {self.box_selection_mode} (always accumulates masks)")
         
         # Hide the drawing layer when turning off the mode
         if dpg.does_item_exist(self.draw_list_tag) and not self.box_selection_mode:
@@ -427,8 +444,12 @@ class MainWindow:
     def segment_with_box(self, box):
         """Segment the current image using a bounding box as input"""
         if self.crop_rotate_ui and hasattr(self.crop_rotate_ui, "original_image"):
-            # Create segmenter on demand
-            segmenter = ImageSegmenter()
+            # Get the reusable segmenter instance
+            segmenter = self.get_segmenter()
+            if segmenter is None:
+                print("Failed to create segmenter instance")
+                return
+                
             image = self.crop_rotate_ui.original_image
             
             # Get the original image dimensions
@@ -444,82 +465,183 @@ class MainWindow:
             ]
             
             print(f"Segmenting with box: {scaled_box}")
-            masks = segmenter.segment_with_box(image, scaled_box)
-            self.layer_masks = masks  # Store masks for further editing
-            self.tool_panel.update_masks(masks)
-            self.update_mask_overlays(masks)
-            print(f"Generated {len(masks)} masks using box input")
+            try:
+                new_masks = segmenter.segment_with_box(image, scaled_box)
+                
+                # Initialize layer_masks if it doesn't exist
+                if not hasattr(self, 'layer_masks') or self.layer_masks is None:
+                    self.layer_masks = []
+                
+                # Always accumulate new masks with existing ones
+                start_index = len(self.layer_masks)
+                self.layer_masks.extend(new_masks)
+                
+                # Add names for new masks
+                if not hasattr(self, 'mask_names'):
+                    self.mask_names = []
+                # Ensure we have names for all existing masks first
+                while len(self.mask_names) < start_index:
+                    self.mask_names.append(f"Mask {len(self.mask_names) + 1}")
+                # Add names for new masks
+                for idx in range(len(new_masks)):
+                    self.mask_names.append(f"Mask {start_index + idx + 1}")
+                
+                print(f"Generated {len(new_masks)} new masks, total masks: {len(self.layer_masks)}")
+                
+                # Update UI with all masks
+                self.tool_panel.update_masks(self.layer_masks, self.mask_names)
+                self.update_mask_overlays(self.layer_masks)
+            except Exception as e:
+                print(f"Error during box segmentation: {e}")
         else:
             print("No image available for segmentation.")
     
     def segment_current_image(self):
         # Segment the current image using SAM
         if self.crop_rotate_ui and hasattr(self.crop_rotate_ui, "original_image"):
-            segmenter = ImageSegmenter()  # Alternatively, cache this instance
+            # Get the reusable segmenter instance
+            segmenter = self.get_segmenter()
+            if segmenter is None:
+                print("Failed to create segmenter instance")
+                return
+                
             image = self.crop_rotate_ui.original_image
-            masks = segmenter.segment(image)
-            self.layer_masks = masks  # Store masks for further editing
-            self.tool_panel.update_masks(masks)
-            self.update_mask_overlays(masks)
-            print("Segmented masks:", len(masks))
+            try:
+                masks = segmenter.segment(image)
+                # For automatic segmentation, replace all existing masks
+                self.layer_masks = masks  # Store masks for further editing
+                
+                # Reset mask names for automatic segmentation
+                self.mask_names = [f"Mask {idx + 1}" for idx in range(len(masks))]
+                
+                self.tool_panel.update_masks(masks, self.mask_names)
+                self.update_mask_overlays(masks)
+                print(f"Automatic segmentation completed with {len(masks)} masks (replaced all previous masks)")
+            except Exception as e:
+                print(f"Error during automatic segmentation: {e}")
         else:
             print("No image available for segmentation.")
 
     def update_mask_overlays(self, masks):
-        # Remove existing mask overlays if any
-        for idx in range(len(masks)):
-            tag_series = f"mask_series_{idx}"
-            if dpg.does_item_exist(tag_series):
-                dpg.delete_item(tag_series)
-        # Define overlay colors (RGBA) for mask layers
-        colors = [(255, 0, 0, 100), (0, 255, 0, 100), (0, 0, 255, 100), (255, 255, 0, 100)]
+        print(f"Updating mask overlays for {len(masks)} masks")
+        
+        # Check if we have valid mask data
+        if not masks:
+            print("No masks to display")
+            return
+            
+        # Get basic dimensions and plot info
         w = self.crop_rotate_ui.texture_w
         h = self.crop_rotate_ui.texture_h
-        # Get the y_axis from the plot (where the image series is attached)
+        original_image = self.crop_rotate_ui.original_image
+        orig_h, orig_w = original_image.shape[:2]
+        
+        # Get the y_axis from the plot 
         plot_children = dpg.get_item_children("image_plot", slot=1)
         if not plot_children or len(plot_children) < 2:
             print("Error: Could not find y_axis in plot")
             return
-        y_axis = plot_children[1]  # Second child is usually the y_axis
+        y_axis = plot_children[1]
         
-        # Create all mask overlays first
-        for idx, mask in enumerate(masks):
-            binary_mask = mask.get("segmentation")
-            if binary_mask is None:
+        print(f"Texture dimensions: {w}x{h}")
+        print(f"Original image dimensions: {orig_w}x{orig_h}")
+        
+        # Define overlay colors (RGBA) for mask layers - cycle through colors if more masks than colors
+        colors = [(255, 0, 0, 100), (0, 255, 0, 100), (0, 0, 255, 100), (255, 255, 0, 100),
+                 (255, 0, 255, 100), (0, 255, 255, 100), (128, 255, 0, 100), (255, 128, 0, 100),
+                 (255, 128, 128, 100), (128, 255, 128, 100), (128, 128, 255, 100), (255, 255, 128, 100),
+                 (255, 128, 255, 100), (128, 255, 255, 100), (192, 64, 0, 100), (0, 192, 64, 100)]
+        
+        # Process all available masks (no artificial limit)
+        max_masks = len(masks)  # Support unlimited masks
+        
+        # Calculate offset once
+        offset_x = (w - orig_w) // 2
+        offset_y = (h - orig_h) // 2
+        
+        # Create a unique timestamp for this batch of masks to avoid tag conflicts
+        import time
+        timestamp = int(time.time() * 1000000)  # Microsecond timestamp for uniqueness
+        
+        # Remove existing series (but not textures) to avoid conflicts
+        # Clean up old series - support up to 100 masks for large accumulations
+        for idx in range(100):
+            old_series_tag = f"mask_series_{idx}"
+            if dpg.does_item_exist(old_series_tag):
+                try:
+                    dpg.delete_item(old_series_tag)
+                    print(f"Deleted old series {old_series_tag}")
+                except Exception as e:
+                    print(f"Error deleting old series {old_series_tag}: {e}")
+        
+        # Create mask overlays with unique texture tags to avoid conflicts
+        successful_masks = 0
+        for idx in range(max_masks):
+            try:
+                mask = masks[idx]
+                binary_mask = mask.get("segmentation")
+                if binary_mask is None:
+                    print(f"Skipping mask {idx} - no segmentation data")
+                    continue
+                
+                print(f"Processing mask {idx} with shape: {binary_mask.shape}")
+                
+                # Create overlay texture
+                overlay = np.zeros((h, w, 4), dtype=np.uint8)
+                color = colors[idx % len(colors)]
+                
+                # Apply mask with color
+                for channel in range(4):
+                    overlay[offset_y:offset_y + orig_h, offset_x:offset_x + orig_w, channel] = np.where(binary_mask == 1, color[channel], 0)
+                
+                # Convert to texture format
+                texture_data = overlay.flatten().astype(np.float32) / 255.0
+                
+                # Use unique texture tag with timestamp to avoid conflicts
+                texture_tag = f"mask_overlay_{idx}_{timestamp}"
+                series_tag = f"mask_series_{idx}"  # Keep series tag simple for easier management
+                
+                # Create new texture with unique tag
+                with dpg.texture_registry():
+                    dpg.add_raw_texture(w, h, texture_data, tag=texture_tag, format=dpg.mvFormat_Float_rgba)
+                
+                # Create new image series
+                dpg.add_image_series(texture_tag,
+                                    bounds_min=[0, 0],
+                                    bounds_max=[w, h],
+                                    parent=y_axis,
+                                    tag=series_tag,
+                                    show=False)  # Start hidden
+                
+                successful_masks += 1
+                print(f"Successfully created mask overlay {idx} with texture {texture_tag}")
+                
+            except Exception as e:
+                print(f"Error creating mask overlay {idx}: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
-                
-            # Resize the binary mask to match texture dimensions if needed
-            binary_mask = cv2.resize(binary_mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
-            overlay = np.zeros((h, w, 4), dtype=np.uint8)
-            color = colors[idx % len(colors)]
-            # Create a colored overlay where mask is 1
-            for channel in range(4):
-                overlay[..., channel] = np.where(binary_mask==1, color[channel], 0)
-            texture_data = overlay.flatten().astype(np.float32) / 255.0
-            texture_tag = f"mask_overlay_{idx}"
-            
-            # Delete texture if it already exists
-            if dpg.does_item_exist(texture_tag):
-                dpg.delete_item(texture_tag)
-                
-            # Create texture using add_raw_texture instead of add_dynamic_texture
-            with dpg.texture_registry():
-                dpg.add_raw_texture(w, h, texture_data, tag=texture_tag, format=dpg.mvFormat_Float_rgba)
-            
-            # Delete the series if it exists to avoid duplicates
-            if dpg.does_item_exist(f"mask_series_{idx}"):
-                dpg.delete_item(f"mask_series_{idx}")
-                
-            # Add the image series
-            dpg.add_image_series(texture_tag,
-                                bounds_min=[0, 0],
-                                bounds_max=[w, h],
-                                parent=y_axis,
-                                tag=f"mask_series_{idx}")
-            
-        # After creating all overlays, show only the first mask if any exists
-        if masks:
-            self.show_selected_mask(0)  # Show first mask by default
+        
+        # Hide any unused existing overlays (beyond current mask count)
+        # Check up to 100 potential existing overlays to handle large numbers of accumulated masks
+        for idx in range(max_masks, 100):
+            series_tag = f"mask_series_{idx}"
+            if dpg.does_item_exist(series_tag):
+                try:
+                    dpg.configure_item(series_tag, show=False)
+                    print(f"Hid unused overlay {idx}")
+                except Exception as e:
+                    print(f"Error hiding overlay {idx}: {e}")
+        
+        # Show first mask if any were created successfully
+        if successful_masks > 0:
+            try:
+                self.show_selected_mask(0)
+                print(f"Successfully processed {successful_masks} mask overlays")
+            except Exception as e:
+                print(f"Error showing selected mask: {e}")
+        else:
+            print("No mask overlays were processed")
         
     def show_selected_mask(self, selected_index):
         """Show only the selected mask and hide others"""
@@ -550,3 +672,111 @@ class MainWindow:
                 dpg.fit_axis_data("y_axis")
         else:
             print(f"Selected mask {selected_index} doesn't exist")
+    
+    def clear_all_masks(self):
+        """Clear all accumulated masks and reset the segmentation state"""
+        print("Clearing all accumulated masks")
+        
+        # Clear the stored masks
+        self.layer_masks = []
+        self.mask_names = []
+        
+        # Hide and clean up all mask overlays
+        # Clean up all possible mask series - support up to 100 masks
+        for idx in range(100):
+            series_tag = f"mask_series_{idx}"
+            if dpg.does_item_exist(series_tag):
+                try:
+                    dpg.configure_item(series_tag, show=False)
+                    dpg.delete_item(series_tag)
+                    print(f"Deleted mask overlay {idx}")
+                except Exception as e:
+                    print(f"Error deleting mask overlay {idx}: {e}")
+        
+        # Clear the mask list in the tool panel
+        if self.tool_panel:
+            self.tool_panel.update_masks([], [])
+        
+        print("All masks cleared successfully")
+    
+    def delete_mask(self, mask_index):
+        """Delete a specific mask by index"""
+        if not hasattr(self, 'layer_masks') or not self.layer_masks:
+            print("No masks available to delete")
+            return
+            
+        if mask_index < 0 or mask_index >= len(self.layer_masks):
+            print(f"Invalid mask index: {mask_index}")
+            return
+        
+        print(f"Deleting mask at index {mask_index}")
+        
+        # Remove the mask and its name
+        del self.layer_masks[mask_index]
+        if hasattr(self, 'mask_names') and mask_index < len(self.mask_names):
+            del self.mask_names[mask_index]
+        
+        # Clean up the visual representation
+        self._cleanup_mask_overlay(mask_index)
+        
+        # Update the UI components
+        self._update_ui_after_mask_change()
+        
+        print(f"Successfully deleted mask at index {mask_index}, remaining masks: {len(self.layer_masks)}")
+    
+    def rename_mask(self, mask_index, new_name):
+        """Rename a specific mask by index"""
+        if not hasattr(self, 'layer_masks') or not self.layer_masks:
+            print("No masks available to rename")
+            return
+            
+        if mask_index < 0 or mask_index >= len(self.layer_masks):
+            print(f"Invalid mask index: {mask_index}")
+            return
+        
+        # Ensure mask_names list exists and is properly sized
+        if not hasattr(self, 'mask_names'):
+            self.mask_names = []
+        
+        # Extend mask_names list if needed
+        while len(self.mask_names) <= mask_index:
+            self.mask_names.append(f"Mask {len(self.mask_names) + 1}")
+        
+        # Update the name
+        old_name = self.mask_names[mask_index]
+        self.mask_names[mask_index] = new_name
+        
+        print(f"Renamed mask at index {mask_index} from '{old_name}' to '{new_name}'")
+        
+        # Update the UI
+        self._update_ui_after_mask_change()
+    
+    def _cleanup_mask_overlay(self, mask_index):
+        """Clean up the visual overlay for a specific mask"""
+        series_tag = f"mask_series_{mask_index}"
+        if dpg.does_item_exist(series_tag):
+            try:
+                dpg.delete_item(series_tag)
+                print(f"Deleted mask overlay {mask_index}")
+            except Exception as e:
+                print(f"Error deleting mask overlay {mask_index}: {e}")
+    
+    def _update_ui_after_mask_change(self):
+        """Update UI components after mask changes (delete/rename)"""
+        # Update the tool panel mask list
+        if self.tool_panel:
+            # Create mask list with custom names if available
+            mask_display_names = []
+            for idx in range(len(self.layer_masks)):
+                if hasattr(self, 'mask_names') and idx < len(self.mask_names):
+                    mask_display_names.append(self.mask_names[idx])
+                else:
+                    mask_display_names.append(f"Mask {idx + 1}")
+            
+            # Update the mask list items directly
+            if dpg.does_item_exist("mask_list"):
+                dpg.configure_item("mask_list", items=mask_display_names)
+        
+        # Refresh mask overlays
+        if self.layer_masks:
+            self.update_mask_overlays(self.layer_masks)

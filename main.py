@@ -15,6 +15,14 @@ UPDATE_THRESHOLD = 0.1
 updated_image = None
 current_image_path = None
 
+def update_histogram_realtime():
+    """Update histogram in real-time during curve adjustments"""
+    global updated_image
+    
+    # Update histogram immediately for real-time feedback
+    if main_window and main_window.tool_panel and updated_image is not None:
+        main_window.tool_panel.update_histogram(updated_image)
+
 def update_image_callback():
     global last_update_time, updated_image, processor, crop_rotate_ui
     current_time = time.time()
@@ -55,6 +63,9 @@ def update_image_callback():
     
     crop_rotate_ui.original_image = updated_image
     crop_rotate_ui.update_image(None, None, None)
+    
+    # Update histogram in real-time for immediate feedback
+    update_histogram_realtime()
 
 def load_image_callback():
     dpg.show_item("file_dialog_load")
@@ -99,6 +110,10 @@ def file_load_callback(sender, app_data, user_data):
     
     main_window.set_crop_rotate_ui(crop_rotate_ui)
     crop_rotate_ui.update_axis_limits()
+    
+    # Update histogram with the newly loaded image
+    if main_window and main_window.tool_panel:
+        main_window.tool_panel.update_histogram(new_image)
 
 def save_image_callback():
     dpg.show_item("file_dialog_save")
