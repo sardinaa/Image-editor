@@ -1,4 +1,5 @@
 import time
+import os
 import dearpygui.dearpygui as dpg
 from processing.image_processor import ImageProcessor
 from processing.file_manager import load_image, save_image
@@ -6,6 +7,9 @@ from ui.main_window import MainWindow
 from ui.crop_rotate import CropRotateUI
 import numpy as np
 import cv2
+
+# Set PyTorch CUDA memory management for better GPU memory handling
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 processor = None
 main_window = None
@@ -76,6 +80,17 @@ def file_load_callback(sender, app_data, user_data):
     if not file_path:
         print("No se seleccionó ningún archivo.")
         return
+    
+    # Clear any existing segmenter to free memory before loading new image
+    if main_window and hasattr(main_window, 'segmenter') and main_window.segmenter:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except:
+            pass
+        main_window.segmenter = None
+    
     try:
         new_image = load_image(file_path)
     except Exception as e:

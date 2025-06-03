@@ -69,15 +69,34 @@ class ToolPanel:
             self.curves_panel.curves = self.curves
             self.curves_panel.show()
             
-            # New Masks section - more compact
+            # Masks section with toggle
+            dpg.add_text("Advance settings", color=[176, 204, 255])
             dpg.add_separator()
             dpg.add_spacer(height=2)
-            dpg.add_text("Masks", color=[176, 204, 255])
-            # Mask management buttons
-            with dpg.group(horizontal=True):
-                dpg.add_button(label="Delete Mask", tag="delete_mask_btn", callback=self._delete_selected_mask, width=85, height=20)
-                dpg.add_button(label="Rename Mask", tag="rename_mask_btn", callback=self._rename_selected_mask, width=85, height=20)
-            dpg.add_listbox(items=[], tag="mask_list", callback=self._mask_selected, num_items=6)
+            dpg.add_checkbox(label="Masks", tag="mask_section_toggle", default_value=False, callback=self.toggle_mask_section)
+            with dpg.child_window(tag="mask_panel", height=240, autosize_x=True, show=False, border=False):
+                # Segmentation options
+                dpg.add_text("Segmentation", color=[200, 200, 200])
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label="Auto Segment", tag="auto_segment_btn", callback=self._auto_segment, width=85, height=20)
+                    dpg.add_checkbox(label="Box Selection Mode", tag="box_selection_mode", 
+                                default_value=False, callback=self._toggle_box_selection)
+                
+                dpg.add_separator()
+                dpg.add_spacer(height=5)
+                
+                # Show/hide mask overlay control
+                dpg.add_checkbox(label="Show Mask Overlay", tag="show_mask_overlay", 
+                               default_value=True, callback=self._toggle_mask_overlay)
+                
+                dpg.add_spacer(height=5)
+                
+                # Mask management buttons
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label="Delete Mask", tag="delete_mask_btn", callback=self._delete_selected_mask, width=82, height=20)
+                    dpg.add_button(label="Rename Mask", tag="rename_mask_btn", callback=self._rename_selected_mask, width=82, height=20)
+                    dpg.add_button(label="Clear Masks", tag="clear_all_masks_btn", callback=self._clear_all_masks, width=85, height=20)
+                dpg.add_listbox(items=[], tag="mask_list", callback=self._mask_selected, num_items=5)
             
             
 
@@ -150,11 +169,29 @@ class ToolPanel:
                 selected_index = current_items.index(app_data)
                 print(f"Selected mask: {app_data}, index: {selected_index}")
                 
-                # Update mask visibility if main_window is available
+                # Update mask visibility if main_window is available and overlay is enabled
                 if self.main_window:
-                    self.main_window.show_selected_mask(selected_index)
+                    # Check if overlay should be shown
+                    show_overlay = True
+                    if dpg.does_item_exist("show_mask_overlay"):
+                        show_overlay = dpg.get_value("show_mask_overlay")
+                    
+                    if show_overlay:
+                        self.main_window.show_selected_mask(selected_index)
+                    
+                    # Enable mask editing for the selected mask automatically
+                    if (hasattr(self.main_window, 'crop_rotate_ui') and 
+                        self.main_window.crop_rotate_ui and 
+                        hasattr(self.main_window.crop_rotate_ui, 'image_processor') and
+                        hasattr(self.main_window, 'layer_masks') and
+                        selected_index < len(self.main_window.layer_masks)):
+                        
+                        selected_mask = self.main_window.layer_masks[selected_index]['segmentation']
+                        self.main_window.crop_rotate_ui.image_processor.set_mask_editing(True, selected_mask)
+                        print(f"Mask editing enabled for: {app_data}")
                 else:
                     print("Main window reference not available")
+                    
             except ValueError as e:
                 print(f"Error finding mask index for '{app_data}': {e}")
         else:
@@ -171,6 +208,23 @@ class ToolPanel:
             dpg.configure_item("mask_list", items=items)
         else:
             print("Mask list widget does not exist.")
+            
+        # Auto-disable mask editing if no masks are available
+        if len(masks) == 0:
+            self.reset_mask_editing()
+    
+    def reset_mask_editing(self):
+        """Reset mask editing mode and clear overlays"""
+        # Hide all mask overlays
+        if dpg.does_item_exist("show_mask_overlay"):
+            dpg.set_value("show_mask_overlay", False)
+        
+        # Update the processor to disable mask editing
+        if (self.main_window and hasattr(self.main_window, 'crop_rotate_ui') and 
+            self.main_window.crop_rotate_ui and 
+            hasattr(self.main_window.crop_rotate_ui, 'image_processor')):
+            
+            self.main_window.crop_rotate_ui.image_processor.set_mask_editing(False, None)
     
     def update_histogram(self, image):
         """Update the histogram with new image data"""
@@ -253,3 +307,101 @@ class ToolPanel:
         # Close the window
         if dpg.does_item_exist("rename_mask_window"):
             dpg.delete_item("rename_mask_window")
+    
+    def _toggle_mask_overlay(self, sender, app_data, user_data):
+        """Toggle the visibility of mask overlays"""
+        show_overlay = dpg.get_value("show_mask_overlay")
+        
+        if self.main_window and hasattr(self.main_window, 'layer_masks'):
+            # Get currently selected mask index
+            current_selection = None
+            selected_index = -1
+            
+            if dpg.does_item_exist("mask_list"):
+                current_selection = dpg.get_value("mask_list")
+                if current_selection:
+                    current_items = dpg.get_item_configuration("mask_list")["items"]
+                    try:
+                        selected_index = current_items.index(current_selection)
+                    except ValueError:
+                        selected_index = -1
+            
+            if show_overlay:
+                # Show the selected mask overlay if there's a selection
+                if selected_index >= 0 and selected_index < len(self.main_window.layer_masks):
+                    self.main_window.show_selected_mask(selected_index)
+                    print(f"Showing mask overlay for: {current_selection}")
+                elif len(self.main_window.layer_masks) > 0:
+                    # Show first mask if no specific selection
+                    self.main_window.show_selected_mask(0)
+                    print("Showing first mask overlay")
+            else:
+                # Hide all mask overlays
+                for idx in range(len(self.main_window.layer_masks)):
+                    mask_tag = f"mask_series_{idx}"
+                    if dpg.does_item_exist(mask_tag):
+                        dpg.configure_item(mask_tag, show=False)
+                print("Hidden all mask overlays")
+
+    def toggle_mask_section(self, sender, app_data, user_data):
+        """Toggle the visibility of the mask section"""
+        current = dpg.get_value("mask_section_toggle")
+        dpg.configure_item("mask_panel", show=current)
+        
+        # If mask section is hidden, also hide all mask overlays
+        if not current and self.main_window and hasattr(self.main_window, 'layer_masks'):
+            # Hide all mask overlays
+            for idx in range(len(self.main_window.layer_masks)):
+                mask_tag = f"mask_series_{idx}"
+                if dpg.does_item_exist(mask_tag):
+                    dpg.configure_item(mask_tag, show=False)
+            print("Hidden all mask overlays (mask section toggled off)")
+            
+            # Disable mask editing when section is hidden
+            if (hasattr(self.main_window, 'crop_rotate_ui') and 
+                self.main_window.crop_rotate_ui and 
+                hasattr(self.main_window.crop_rotate_ui, 'image_processor')):
+                
+                self.main_window.crop_rotate_ui.image_processor.set_mask_editing(False, None)
+                print("Mask editing disabled (mask section toggled off)")
+        
+        elif current and self.main_window and hasattr(self.main_window, 'layer_masks'):
+            # When mask section is shown again, respect the overlay toggle setting
+            if dpg.does_item_exist("show_mask_overlay") and dpg.get_value("show_mask_overlay"):
+                # Get currently selected mask and show it
+                if dpg.does_item_exist("mask_list"):
+                    current_selection = dpg.get_value("mask_list")
+                    if current_selection:
+                        current_items = dpg.get_item_configuration("mask_list")["items"]
+                        try:
+                            selected_index = current_items.index(current_selection)
+                            if selected_index < len(self.main_window.layer_masks):
+                                self.main_window.show_selected_mask(selected_index)
+                                print(f"Restored mask overlay for: {current_selection}")
+                        except ValueError:
+                            pass
+                    elif len(self.main_window.layer_masks) > 0:
+                        # Show first mask if no selection
+                        self.main_window.show_selected_mask(0)
+                        print("Restored first mask overlay")
+
+    def _auto_segment(self, sender, app_data, user_data):
+        """Trigger automatic segmentation through main window"""
+        if self.main_window:
+            self.main_window.segment_current_image()
+        else:
+            print("Main window reference not available for auto segmentation")
+    
+    def _toggle_box_selection(self, sender, app_data, user_data):
+        """Toggle box selection mode through main window"""
+        if self.main_window:
+            self.main_window.toggle_box_selection_mode(sender, app_data)
+        else:
+            print("Main window reference not available for box selection")
+    
+    def _clear_all_masks(self, sender, app_data, user_data):
+        """Clear all masks through main window"""
+        if self.main_window:
+            self.main_window.clear_all_masks()
+        else:
+            print("Main window reference not available for clearing masks")

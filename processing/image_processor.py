@@ -21,26 +21,89 @@ class ImageProcessor:
         self.grain = 0
         self.temperature = 0
         self.rgb_curves = None  # Placeholder for custom curves
+        
+        # Mask editing properties
+        self.mask_editing_enabled = False
+        self.current_mask = None
 
     def reset(self):
         self.current = self.original.copy()
+    
+    def set_mask_editing(self, enabled, mask=None):
+        """
+        Enable or disable mask-based editing
+        
+        Args:
+            enabled (bool): Whether to enable mask editing
+            mask (numpy.ndarray): Binary mask array (0-255) or None to disable
+        """
+        self.mask_editing_enabled = enabled
+        if enabled and mask is not None:
+            # Ensure mask is binary and same dimensions as image
+            if len(mask.shape) == 3:
+                mask = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
+            
+            # Normalize mask to 0-1 range
+            self.current_mask = (mask > 127).astype(np.float32)
+        else:
+            self.current_mask = None
+            self.mask_editing_enabled = False
 
     def apply_all_edits(self):
         """
         Applies all the editing functions in sequence to the original image.
+        If mask editing is enabled, applies edits only to masked areas.
         """
         img = self.original.copy()
-        img = self.apply_exposure(img, self.exposure)
-        img = self.apply_illumination(img, self.illumination)
-        img = self.apply_contrast(img, self.contrast)
-        img = self.apply_shadow(img, self.shadow)
-        img = self.apply_whites(img, self.whites)
-        img = self.apply_blacks(img, self.blacks)
-        img = self.apply_saturation(img, self.saturation)
-        img = self.apply_texture(img, self.texture)
-        img = self.apply_grain(img, self.grain)
-        img = self.apply_temperature(img, self.temperature)
-        # For crop/rotate and RGB curves, you might trigger separate workflows.
+        
+        if self.mask_editing_enabled and self.current_mask is not None:
+            # Apply edits only to masked areas
+            mask = self.current_mask
+            
+            # Create a copy of the masked area for editing
+            masked_img = img.copy()
+            masked_img = self.apply_exposure(masked_img, self.exposure)
+            masked_img = self.apply_illumination(masked_img, self.illumination)
+            masked_img = self.apply_contrast(masked_img, self.contrast)
+            masked_img = self.apply_shadow(masked_img, self.shadow)
+            masked_img = self.apply_whites(masked_img, self.whites)
+            masked_img = self.apply_blacks(masked_img, self.blacks)
+            masked_img = self.apply_saturation(masked_img, self.saturation)
+            masked_img = self.apply_texture(masked_img, self.texture)
+            masked_img = self.apply_grain(masked_img, self.grain)
+            masked_img = self.apply_temperature(masked_img, self.temperature)
+            
+            # Ensure all images have the same number of channels
+            if img.shape[2] != masked_img.shape[2]:
+                if img.shape[2] == 4 and masked_img.shape[2] == 3:
+                    # Add alpha channel to masked_img
+                    alpha_channel = np.ones((masked_img.shape[0], masked_img.shape[1], 1), dtype=masked_img.dtype) * 255
+                    masked_img = np.concatenate([masked_img, alpha_channel], axis=2)
+                elif img.shape[2] == 3 and masked_img.shape[2] == 4:
+                    # Remove alpha channel from masked_img
+                    masked_img = masked_img[:, :, :3]
+            
+            # Blend the edited masked area back into the original image
+            # Expand mask to match image channels
+            if img.shape[2] == 4:
+                mask_3d = np.stack([mask, mask, mask, mask], axis=2)
+            else:
+                mask_3d = np.stack([mask, mask, mask], axis=2)
+                
+            img = np.where(mask_3d, masked_img, img)
+        else:
+            # Apply edits to the entire image as before
+            img = self.apply_exposure(img, self.exposure)
+            img = self.apply_illumination(img, self.illumination)
+            img = self.apply_contrast(img, self.contrast)
+            img = self.apply_shadow(img, self.shadow)
+            img = self.apply_whites(img, self.whites)
+            img = self.apply_blacks(img, self.blacks)
+            img = self.apply_saturation(img, self.saturation)
+            img = self.apply_texture(img, self.texture)
+            img = self.apply_grain(img, self.grain)
+            img = self.apply_temperature(img, self.temperature)
+        
         self.current = img
         return img
 
@@ -145,11 +208,55 @@ class ImageProcessor:
         curves: a dict with keys 'r', 'g', 'b'. Each value is a list of control points [(x, y), ...]
         where x and y are in [0,255]. If a channel is missing, that channel remains unchanged.
         interpolation_mode: "Linear" or "Spline"
+        
+        If mask editing is enabled, applies curves only to masked areas.
         """
         if curves is None:
             return image
-        # Split channels (note: OpenCV uses BGR order)
-        b, g, r = cv2.split(image)
+        
+        if self.mask_editing_enabled and self.current_mask is not None:
+            # Apply curves only to masked areas
+            result_image = image.copy()
+            
+            # Apply curves to the entire image first
+            curves_applied = self._apply_curves_to_image(image, curves, interpolation_mode)
+            
+            # Ensure all images have the same number of channels
+            if result_image.shape[2] != curves_applied.shape[2]:
+                if result_image.shape[2] == 4 and curves_applied.shape[2] == 3:
+                    # Add alpha channel to curves_applied
+                    alpha_channel = np.ones((curves_applied.shape[0], curves_applied.shape[1], 1), dtype=curves_applied.dtype) * 255
+                    curves_applied = np.concatenate([curves_applied, alpha_channel], axis=2)
+                elif result_image.shape[2] == 3 and curves_applied.shape[2] == 4:
+                    # Remove alpha channel from curves_applied
+                    curves_applied = curves_applied[:, :, :3]
+            
+            # Blend the curves result back into the original using the mask
+            if result_image.shape[2] == 4:
+                mask_3d = np.stack([self.current_mask, self.current_mask, self.current_mask, self.current_mask], axis=2)
+            else:
+                mask_3d = np.stack([self.current_mask, self.current_mask, self.current_mask], axis=2)
+                
+            result_image = np.where(mask_3d, curves_applied, result_image)
+            
+            return result_image
+        else:
+            # Apply curves to the entire image
+            return self._apply_curves_to_image(image, curves, interpolation_mode)
+    
+    def _apply_curves_to_image(self, image, curves, interpolation_mode="Linear"):
+        """Helper method to apply curves to an image"""
+        # Handle both RGB and RGBA images
+        if image.shape[2] == 4:
+            # RGBA image - split into RGB and alpha channels
+            b, g, r, a = cv2.split(image)
+            alpha_channel = a
+        else:
+            # RGB image - split normally (note: OpenCV uses BGR order)
+            b, g, r = cv2.split(image)
+            alpha_channel = None
+        
+        # Apply curves to RGB channels
         if "r" in curves and curves["r"]:
             lut_r = self.generate_lut_from_points(curves["r"], interpolation_mode)
             r = cv2.LUT(r, lut_r)
@@ -159,7 +266,12 @@ class ImageProcessor:
         if "b" in curves and curves["b"]:
             lut_b = self.generate_lut_from_points(curves["b"], interpolation_mode)
             b = cv2.LUT(b, lut_b)
-        return cv2.merge([b, g, r])
+        
+        # Merge channels back, including alpha if present
+        if alpha_channel is not None:
+            return cv2.merge([b, g, r, alpha_channel])
+        else:
+            return cv2.merge([b, g, r])
     
     def generate_lut_from_points(self, points, interpolation_mode="Linear"):
         """Generate a lookup table from control points using specified interpolation"""
@@ -258,3 +370,157 @@ class ImageProcessor:
             cropped = cv2.flip(cropped, 0)
             
         return cropped
+
+    def enable_mask_editing(self, mask=None):
+        """
+        Enable or disable mask editing.
+        If a mask is provided, it will be used as the current mask.
+        """
+        self.mask_editing_enabled = True
+        if mask is not None:
+            self.current_mask = mask.astype(np.float32) / 255.0  # Normalize to [0,1] range
+
+    def disable_mask_editing(self):
+        """Disable mask editing."""
+        self.mask_editing_enabled = False
+        self.current_mask = None
+
+    def apply_mask(self, image, mask, invert_mask=False):
+        """
+        Apply a mask to the image.
+        If invert_mask is True, the mask will be inverted before application.
+        """
+        if invert_mask:
+            mask = 1 - mask  # Invert the mask
+        # Ensure the mask is the same size as the image
+        if mask.shape[:2] != image.shape[:2]:
+            mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
+        # Apply the mask: multiply image by mask (in float32), then convert back to uint8
+        return cv2.convertScaleAbs(image.astype(np.float32) * mask[..., np.newaxis])
+
+    def apply_exposure_to_mask(self, value):
+        """Apply exposure adjustment to the current mask."""
+        if self.current_mask is not None:
+            # Scale the exposure value to the range of the mask
+            scaled_value = value * 255.0 / 100.0
+            # Adjust the mask: clip values to [0,255] range
+            self.current_mask = np.clip(self.current_mask * scaled_value, 0, 255).astype(np.uint8)
+
+    def apply_illumination_to_mask(self, value):
+        """Apply illumination (gamma correction) to the current mask."""
+        if self.current_mask is not None:
+            gamma = 1.0 + value / 100.0
+            invGamma = 1.0 / gamma
+            table = np.array([((i / 255.0) ** invGamma) * 255 for i in range(256)]).astype("uint8")
+            self.current_mask = cv2.LUT(self.current_mask, table)
+
+    def apply_contrast_to_mask(self, value):
+        """Apply contrast adjustment to the current mask."""
+        if self.current_mask is not None:
+            self.current_mask = cv2.convertScaleAbs(self.current_mask, alpha=value, beta=0)
+
+    def apply_shadow_to_mask(self, value):
+        """
+        Adjusts shadow areas of the mask (darker regions). A positive value brightens dark areas.
+        We compute a luminance mask and then blend in an adjustment.
+        """
+        if self.current_mask is not None:
+            # Convert mask to float for precision.
+            mask_f = self.current_mask.astype(np.float32)
+            # Compute approximate luminance as the mean of RGB channels.
+            luminance = np.mean(mask_f, axis=2)
+            # Create a mask: consider pixels with luminance below a threshold (e.g., 128)
+            shadow_mask = (luminance < 128).astype(np.float32)
+            # Normalize the slider value to an adjustment factor.
+            adjustment = (value / 100.0) * 153  # tweak multiplier as needed
+            # For dark pixels, add the adjustment (shadow_mask has shape [H, W], expand to 3 channels)
+            mask_f += adjustment * shadow_mask[..., None]
+            mask_f = np.clip(mask_f, 0, 255)
+            self.current_mask = mask_f.astype(np.uint8)
+
+    def apply_whites_to_mask(self, value):
+        """
+        Adjusts highlight areas of the mask (bright regions). A positive value will reduce brightness in highlights.
+        We create a mask for pixels above a threshold (e.g., luminance > 200).
+        """
+        if self.current_mask is not None:
+            mask_f = self.current_mask.astype(np.float32)
+            luminance = np.mean(mask_f, axis=2)
+            highlight_mask = (luminance > 200).astype(np.float32)
+            # Normalize value: if value=100, then subtract up to 60% of 255 (~153) from highlights.
+            adjustment = (value / 100.0) * 153  # tweak multiplier as needed
+            # Subtract adjustment only in bright areas.
+            mask_f -= adjustment * highlight_mask[..., None]
+            mask_f = np.clip(mask_f, 0, 255)
+            self.current_mask = mask_f.astype(np.uint8)
+
+    def apply_blacks_to_mask(self, value):
+        """
+        Adjusts very dark areas of the mask. A positive value lightens dark areas.
+        We create a mask for pixels below a low luminance threshold (e.g., < 50).
+        """
+        if self.current_mask is not None:
+            mask_f = self.current_mask.astype(np.float32)
+            luminance = np.mean(mask_f, axis=2)
+            dark_mask = (luminance < 50).astype(np.float32)
+            adjustment = (value / 100.0) * 153  # tweak multiplier as needed
+            mask_f += adjustment * dark_mask[..., None]
+            mask_f = np.clip(mask_f, 0, 255)
+            self.current_mask = mask_f.astype(np.uint8)
+
+    def apply_saturation_to_mask(self, value):
+        # Convert mask to HSV, adjust the saturation, then convert back
+        if self.current_mask is not None:
+            hsv = cv2.cvtColor(self.current_mask, cv2.COLOR_RGB2HSV).astype(np.float32)
+            hsv[..., 1] *= value
+            hsv[..., 1] = np.clip(hsv[..., 1], 0, 255)
+            hsv = hsv.astype(np.uint8)
+            self.current_mask = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+
+    def apply_texture_to_mask(self, value):
+        # Apply a simple sharpening filter as a placeholder for texture control.
+        if value == 0 or self.current_mask is None:
+            return
+        kernel = np.array([[-1, -1, -1],
+                           [-1, 9 + value, -1],
+                           [-1, -1, -1]])
+        self.current_mask = cv2.filter2D(self.current_mask, -1, kernel)
+
+    def apply_grain_to_mask(self, value):
+        # Add random noise to simulate grain.
+        if value == 0 or self.current_mask is None:
+            return
+        noise = np.random.randint(0, value, self.current_mask.shape, dtype='uint8')
+        self.current_mask = cv2.add(self.current_mask, noise)
+
+    def apply_temperature_to_mask(self, value):
+        # Adjust temperature by shifting the color channels.
+        if self.current_mask is not None:
+            b, g, r = cv2.split(self.current_mask)
+            if value > 0:
+                r = cv2.add(r, np.full(r.shape, value, dtype=np.uint8))
+            else:
+                b = cv2.add(b, np.full(b.shape, -value, dtype=np.uint8))
+            self.current_mask = cv2.merge([b, g, r])
+
+    def apply_rgb_curves_to_mask(self, curves, interpolation_mode="Linear"):
+        """
+        Applies custom RGB curves to the current mask.
+        curves: a dict with keys 'r', 'g', 'b'. Each value is a list of control points [(x, y), ...]
+        where x and y are in [0,255]. If a channel is missing, that channel remains unchanged.
+        interpolation_mode: "Linear" or "Spline"
+        """
+        if self.current_mask is None or curves is None:
+            return
+        # Split channels (note: OpenCV uses BGR order)
+        b, g, r = cv2.split(self.current_mask)
+        if "r" in curves and curves["r"]:
+            lut_r = self.generate_lut_from_points(curves["r"], interpolation_mode)
+            r = cv2.LUT(r, lut_r)
+        if "g" in curves and curves["g"]:
+            lut_g = self.generate_lut_from_points(curves["g"], interpolation_mode)
+            g = cv2.LUT(g, lut_g)
+        if "b" in curves and curves["b"]:
+            lut_b = self.generate_lut_from_points(curves["b"], interpolation_mode)
+            b = cv2.LUT(b, lut_b)
+        self.current_mask = cv2.merge([b, g, r])

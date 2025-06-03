@@ -63,12 +63,6 @@ class MainWindow:
             with dpg.menu(label="Editar"):
                 dpg.add_menu_item(label="Undo", callback=lambda: print("Deshacer"))
                 dpg.add_menu_item(label="Redo", callback=lambda: print("Rehacer"))
-                # Segmentation menu options
-                with dpg.menu(label="Segmentation"):
-                    dpg.add_menu_item(label="Automatic Segment", callback=self.segment_current_image)
-                    dpg.add_menu_item(label="Box Selection Mode", callback=self.toggle_box_selection_mode, 
-                                     check=True, tag="box_selection_mode_menu")
-                    dpg.add_menu_item(label="Clear All Masks", callback=self.clear_all_masks)
 
     def create_central_panel_content(self):
         # Añadir el image_series y los manejadores cuando tengamos crop_rotate_ui
@@ -299,11 +293,19 @@ class MainWindow:
         if self.segmenter is None:
             try:
                 print("Creating ImageSegmenter instance...")
-                self.segmenter = ImageSegmenter()
+                # Use auto device selection for better memory management
+                self.segmenter = ImageSegmenter(device="auto")
                 print("ImageSegmenter instance created successfully")
             except Exception as e:
                 print(f"Error creating ImageSegmenter: {e}")
-                return None
+                # Try fallback to CPU if GPU fails
+                try:
+                    print("Attempting to create ImageSegmenter with CPU...")
+                    self.segmenter = ImageSegmenter(device="cpu")
+                    print("ImageSegmenter instance created successfully on CPU")
+                except Exception as cpu_e:
+                    print(f"Error creating ImageSegmenter on CPU: {cpu_e}")
+                    return None
         return self.segmenter
 
     def set_crop_rotate_ui(self, crop_rotate_ui):
@@ -318,7 +320,20 @@ class MainWindow:
 
     def toggle_box_selection_mode(self, sender, app_data):
         """Toggle the box selection mode on/off"""
-        self.box_selection_mode = dpg.get_value(sender)
+        # Get the current state - could be from either the tool panel or sender
+        if sender and dpg.does_item_exist(sender):
+            self.box_selection_mode = dpg.get_value(sender)
+        elif dpg.does_item_exist("box_selection_mode"):
+            # If called from tool panel, get value from tool panel checkbox
+            self.box_selection_mode = dpg.get_value("box_selection_mode")
+        else:
+            # Fallback - toggle current state
+            self.box_selection_mode = not self.box_selection_mode
+        
+        # Sync both checkboxes to the same state
+        if dpg.does_item_exist("box_selection_mode"):
+            dpg.set_value("box_selection_mode", self.box_selection_mode)
+        
         print(f"Box selection mode: {self.box_selection_mode} (always accumulates masks)")
         
         # Hide the drawing layer when turning off the mode
@@ -466,6 +481,9 @@ class MainWindow:
             
             print(f"Segmenting with box: {scaled_box}")
             try:
+                # Clean up memory before segmentation
+                self.cleanup_segmenter_memory()
+                
                 new_masks = segmenter.segment_with_box(image, scaled_box)
                 
                 # Initialize layer_masks if it doesn't exist
@@ -493,6 +511,15 @@ class MainWindow:
                 self.update_mask_overlays(self.layer_masks)
             except Exception as e:
                 print(f"Error during box segmentation: {e}")
+                # On error, try to clean up memory and potentially reset segmenter
+                try:
+                    self.cleanup_segmenter_memory()
+                    # If it's a memory error, suggest resetting the segmenter
+                    if "memory" in str(e).lower() or "cuda" in str(e).lower():
+                        print("Memory-related error detected. Consider resetting segmenter for next use.")
+                        self.reset_segmenter()
+                except Exception as cleanup_e:
+                    print(f"Error during cleanup: {cleanup_e}")
         else:
             print("No image available for segmentation.")
     
@@ -507,6 +534,9 @@ class MainWindow:
                 
             image = self.crop_rotate_ui.original_image
             try:
+                # Clean up memory before segmentation
+                self.cleanup_segmenter_memory()
+                
                 masks = segmenter.segment(image)
                 # For automatic segmentation, replace all existing masks
                 self.layer_masks = masks  # Store masks for further editing
@@ -519,6 +549,15 @@ class MainWindow:
                 print(f"Automatic segmentation completed with {len(masks)} masks (replaced all previous masks)")
             except Exception as e:
                 print(f"Error during automatic segmentation: {e}")
+                # On error, try to clean up memory and potentially reset segmenter
+                try:
+                    self.cleanup_segmenter_memory()
+                    # If it's a memory error, suggest resetting the segmenter
+                    if "memory" in str(e).lower() or "cuda" in str(e).lower():
+                        print("Memory-related error detected. Consider resetting segmenter for next use.")
+                        self.reset_segmenter()
+                except Exception as cleanup_e:
+                    print(f"Error during cleanup: {cleanup_e}")
         else:
             print("No image available for segmentation.")
 
@@ -642,7 +681,7 @@ class MainWindow:
                 print(f"Error showing selected mask: {e}")
         else:
             print("No mask overlays were processed")
-        
+    
     def show_selected_mask(self, selected_index):
         """Show only the selected mask and hide others"""
         if not hasattr(self, 'layer_masks') or not self.layer_masks:
@@ -780,3 +819,24 @@ class MainWindow:
         # Refresh mask overlays
         if self.layer_masks:
             self.update_mask_overlays(self.layer_masks)
+    
+    def cleanup_segmenter_memory(self):
+        """Clean up segmenter memory when needed"""
+        if hasattr(self, 'segmenter') and self.segmenter:
+            try:
+                self.segmenter.cleanup_memory()
+                print("Segmenter memory cleaned up")
+            except Exception as e:
+                print(f"Error cleaning up segmenter memory: {e}")
+    
+    def reset_segmenter(self):
+        """Reset the segmenter instance to free memory"""
+        if hasattr(self, 'segmenter') and self.segmenter:
+            try:
+                # Clean up memory first
+                self.cleanup_segmenter_memory()
+                # Reset the segmenter
+                self.segmenter = None
+                print("Segmenter instance reset")
+            except Exception as e:
+                print(f"Error resetting segmenter: {e}")
