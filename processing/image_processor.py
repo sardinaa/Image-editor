@@ -9,6 +9,10 @@ class ImageProcessor:
         """
         self.original = image.copy()
         self.current = image.copy()
+        # Base image for cumulative editing - starts as original but gets updated
+        # when we finish editing a mask or apply global edits
+        self.base_image = image.copy()
+        
         # Default parameters
         self.exposure = 0
         self.illumination = 0
@@ -28,6 +32,16 @@ class ImageProcessor:
 
     def reset(self):
         self.current = self.original.copy()
+        self.base_image = self.original.copy()
+        
+    def commit_edits_to_base(self):
+        """
+        Commits current edits to the base image. This should be called
+        when switching between masks or from mask editing to global editing
+        to preserve the cumulative changes.
+        """
+        self.base_image = self.current.copy()
+        print(f"DEBUG: Committed current edits to base image")
     
     def set_mask_editing(self, enabled, mask=None):
         """
@@ -35,30 +49,57 @@ class ImageProcessor:
         
         Args:
             enabled (bool): Whether to enable mask editing
-            mask (numpy.ndarray): Binary mask array (0-255) or None to disable
+            mask (numpy.ndarray): Binary mask array (boolean or 0-255) or None to disable
         """
+        print(f"DEBUG: set_mask_editing called - enabled: {enabled}, mask provided: {mask is not None}")
         self.mask_editing_enabled = enabled
         if enabled and mask is not None:
-            # Ensure mask is binary and same dimensions as image
-            if len(mask.shape) == 3:
-                mask = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
+            print(f"DEBUG: Original mask shape: {mask.shape}, dtype: {mask.dtype}, range: {mask.min()}-{mask.max()}")
             
-            # Normalize mask to 0-1 range
-            self.current_mask = (mask > 127).astype(np.float32)
+            # Handle different mask formats
+            if mask.dtype == bool:
+                # Boolean mask - convert to float32 0-1 range
+                self.current_mask = mask.astype(np.float32)
+                print(f"DEBUG: Converted boolean mask to float32")
+            else:
+                # Ensure mask is binary and same dimensions as image
+                if len(mask.shape) == 3:
+                    mask = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
+                    print(f"DEBUG: Converted to grayscale - shape: {mask.shape}")
+                
+                # Handle different numeric ranges
+                if mask.max() > 1:
+                    # 0-255 range mask - normalize to 0-1
+                    self.current_mask = (mask > 127).astype(np.float32)
+                    print(f"DEBUG: Converted 0-255 mask to 0-1 range")
+                else:
+                    # Already 0-1 range
+                    self.current_mask = mask.astype(np.float32)
+                    print(f"DEBUG: Used existing 0-1 range mask")
+            
+            print(f"DEBUG: Final mask shape: {self.current_mask.shape}, range: {self.current_mask.min()}-{self.current_mask.max()}")
+            unique_values = np.unique(self.current_mask)
+            print(f"DEBUG: Unique mask values: {unique_values}")
+            non_zero_pixels = np.sum(self.current_mask > 0)
+            total_pixels = self.current_mask.size
+            print(f"DEBUG: Mask coverage: {non_zero_pixels}/{total_pixels} pixels ({100*non_zero_pixels/total_pixels:.1f}%)")
         else:
             self.current_mask = None
             self.mask_editing_enabled = False
+            print(f"DEBUG: Mask editing disabled")
 
     def apply_all_edits(self):
         """
-        Applies all the editing functions in sequence to the original image.
+        Applies all the editing functions in sequence to the base image.
         If mask editing is enabled, applies edits only to masked areas.
+        For cumulative editing, this starts from base_image instead of original.
         """
-        img = self.original.copy()
+        img = self.base_image.copy()
         
         if self.mask_editing_enabled and self.current_mask is not None:
             # Apply edits only to masked areas
             mask = self.current_mask
+            print(f"DEBUG: Applying mask editing - mask shape: {mask.shape}, mask range: {mask.min()}-{mask.max()}")
             
             # Create a copy of the masked area for editing
             masked_img = img.copy()
@@ -91,8 +132,10 @@ class ImageProcessor:
                 mask_3d = np.stack([mask, mask, mask], axis=2)
                 
             img = np.where(mask_3d, masked_img, img)
+            print(f"DEBUG: Applied mask editing successfully")
         else:
             # Apply edits to the entire image as before
+            print(f"DEBUG: Applying global editing - mask_editing_enabled: {self.mask_editing_enabled}, has_mask: {self.current_mask is not None}")
             img = self.apply_exposure(img, self.exposure)
             img = self.apply_illumination(img, self.illumination)
             img = self.apply_contrast(img, self.contrast)

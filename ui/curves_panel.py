@@ -839,6 +839,62 @@ class CurvesPanel:
             "interpolation_mode": self.current_interpolation
         }
     
+    def set_curves(self, curves_data):
+        """Set the curves data and update the UI
+        
+        Args:
+            curves_data: Dictionary containing:
+                - 'curves': Dict with 'r', 'g', 'b' keys and list of (x, y) tuples
+                - 'interpolation_mode': String, either "Linear" or "Spline"
+        """
+        if not isinstance(curves_data, dict):
+            return
+            
+        # Set curves data if provided
+        if 'curves' in curves_data and isinstance(curves_data['curves'], dict):
+            # Validate and set each channel
+            for channel in ['r', 'g', 'b']:
+                if channel in curves_data['curves']:
+                    channel_curves = curves_data['curves'][channel]
+                    if isinstance(channel_curves, list):
+                        # Validate that all points are tuples/lists with 2 elements
+                        valid_points = []
+                        for point in channel_curves:
+                            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                                x, y = float(point[0]), float(point[1])
+                                # Clamp values to valid range
+                                x = max(0, min(255, x))
+                                y = max(0, min(255, y))
+                                valid_points.append((x, y))
+                        
+                        if valid_points:
+                            # Ensure we have at least the endpoints
+                            if len(valid_points) < 2:
+                                valid_points = [(0, 0), (255, 255)]
+                            
+                            # Sort by x coordinate and remove duplicates
+                            valid_points = sorted(set(valid_points), key=lambda p: p[0])
+                            
+                            # Ensure endpoints are present
+                            if valid_points[0][0] != 0:
+                                valid_points.insert(0, (0, 0))
+                            if valid_points[-1][0] != 255:
+                                valid_points.append((255, 255))
+                            
+                            self.curves[channel] = valid_points
+        
+        # Set interpolation mode if provided
+        if 'interpolation_mode' in curves_data:
+            mode = curves_data['interpolation_mode']
+            if mode in self.interpolation_modes:
+                self.current_interpolation = mode
+                # Update the UI combo box if it exists
+                if dpg.does_item_exist(self.interpolation_combo_tag):
+                    dpg.set_value(self.interpolation_combo_tag, mode)
+        
+        # Update the plot to reflect the new curves
+        self.update_plot()
+    
     def on_plot_callback(self, sender, app_data):
         """Direct plot callback - receives plot coordinates directly"""
         

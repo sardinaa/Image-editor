@@ -7,15 +7,19 @@ The image editor now supports mask-based editing, allowing you to apply editing 
 
 ### Step 1: Create Segmentation Masks
 1. Load an image using **File → Load Image**
-2. Use the **box selection tool** to draw rectangles around objects you want to segment
-3. The AI segmentation will automatically create masks for the selected objects
-4. Multiple masks can be created and will appear in the **Masks** list
+2. Enable masks by checking the main **"Masks"** checkbox
+3. Use the **box selection tool** to draw rectangles around objects you want to segment
+4. The AI segmentation will automatically create masks for the selected objects
+5. Multiple masks can be created and will appear in the **Masks** list
 
-### Step 2: Enable Mask Editing
-1. In the **Masks** section of the tool panel, select a mask from the list
-2. Check the **"Edit Selected Mask Only"** checkbox
-3. The status will show "Editing: [Mask Name]" in yellow text
-4. Now all editing tools will only affect the selected mask region
+**Note**: When the main "Masks" checkbox is unchecked, all mask-related functionality (box selection, auto segment, mask management) is disabled.
+
+### Step 2: Control Editing Mode
+**Automatic Mask Editing:**
+- When the main **"Masks"** checkbox is **TRUE**: Editing mode is automatically determined by mask selection
+  - If a mask is selected from the list: Edit only that mask region
+  - If no mask is selected: Apply global editing
+- When the main **"Masks"** checkbox is **FALSE**: Always apply global editing (masks are hidden)
 
 ### Step 3: Apply Edits to Masked Region
 With mask editing enabled, you can use any of the following tools:
@@ -33,10 +37,11 @@ With mask editing enabled, you can use any of the following tools:
 - **RGB Curves**: Apply custom tone curves only to the masked region
 - All curve adjustments (Red, Green, Blue channels) respect the mask
 
-### Step 4: Switch Between Masks
-- Select different masks from the list to edit different regions
-- The "Edit Selected Mask Only" mode will automatically switch to the newly selected mask
-- You can disable mask editing by unchecking the checkbox to return to global editing
+### Step 4: Switch Between Masks and Global Editing
+- **Mask-to-Mask**: Select different masks from the list to edit different regions
+- **Mask to Global**: Deselect all masks or disable the "Masks" checkbox
+- **Global to Mask**: Enable the "Masks" checkbox and select a mask from the list
+- All parameter changes are automatically preserved when switching between modes
 
 ## Features
 
@@ -86,18 +91,20 @@ With mask editing enabled, you can use any of the following tools:
 4. Combine mask editing with global adjustments for best results
 
 ### Troubleshooting
-- If mask editing doesn't work, ensure a mask is selected from the list
-- The yellow status text shows the current editing mode
-- Disable and re-enable mask editing if issues occur
-- Check that the image processor is properly loaded
+- If mask editing doesn't work, ensure the "Masks" checkbox is enabled
+- Check that a mask is selected from the list for mask editing
+- To switch to global editing, disable the "Masks" checkbox or deselect all masks
+- All parameter changes are automatically preserved when switching between editing modes
+- **Box selection and auto segment are disabled when the main "Masks" checkbox is unchecked**
+- If mask-related buttons appear grayed out, check that the "Masks" checkbox is enabled
 
 ## Example Workflow
 
 1. **Load a landscape photo**
 2. **Create masks**: Draw boxes around sky, mountains, and foreground
-3. **Edit sky**: Select sky mask, increase exposure and saturation
+3. **Edit sky**: Ensure "Masks" is enabled, select sky mask, increase exposure and saturation
 4. **Edit mountains**: Select mountain mask, adjust contrast and shadows
 5. **Edit foreground**: Select foreground mask, enhance texture and warmth
-6. **Final touches**: Disable mask editing and apply global adjustments
+6. **Final touches**: Disable "Masks" checkbox to apply global adjustments
 
 This selective editing approach allows for professional-level photo editing with precise control over different regions of your image.
