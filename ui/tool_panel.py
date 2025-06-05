@@ -122,6 +122,16 @@ class ToolPanel:
 
     def toggle_crop_mode(self, sender, app_data, user_data):
         current = dpg.get_value("crop_mode")
+        
+        # If crop mode is being enabled, disable masks
+        if current:
+            # Check if masks are currently enabled
+            if dpg.does_item_exist("mask_section_toggle") and dpg.get_value("mask_section_toggle"):
+                print("Disabling masks to enable crop & rotate")
+                dpg.set_value("mask_section_toggle", False)
+                # Trigger the mask section toggle to handle all the mask disabling logic
+                self.toggle_mask_section(None, None, None)
+        
         dpg.configure_item("crop_panel", show=current)
         if not current:  # Apply crop when checkbox is unchecked
             self._crop_image(sender, app_data, user_data)
@@ -365,6 +375,14 @@ class ToolPanel:
         """Toggle the visibility of the mask section and control editing mode"""
         current = dpg.get_value("mask_section_toggle")
         dpg.configure_item("mask_panel", show=current)
+        
+        # If masks are being enabled, disable crop mode
+        if current:
+            # Check if crop mode is currently enabled
+            if dpg.does_item_exist("crop_mode") and dpg.get_value("crop_mode"):
+                print("Disabling crop & rotate to enable masks")
+                dpg.set_value("crop_mode", False)
+                dpg.configure_item("crop_panel", show=False)
         
         # Control editing mode based on masks checkbox state
         if not current and self.main_window and hasattr(self.main_window, 'layer_masks'):
