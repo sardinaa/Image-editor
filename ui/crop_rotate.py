@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import dearpygui.dearpygui as dpg
 import time
+from .bounding_box_renderer import BoundingBoxRenderer, BoundingBox
 
 class CropRotateUI:
     def __init__(self, image, image_processor):
@@ -21,10 +22,28 @@ class CropRotateUI:
         self.texture_tag = "crop_rotate_texture"
         self.rotation_slider = "rotation_slider"
 
-        # Establecer un valor inicial para el slider si no existe
+        # Initialize the slider if it doesn't exist
         if not dpg.does_item_exist(self.rotation_slider):
             dpg.add_slider_float(tag=self.rotation_slider, default_value=0, min_value=0, max_value=360, show=False)
 
+        # Initialize the bounding box renderer
+        self.bbox_renderer = BoundingBoxRenderer(
+            texture_width=self.texture_w,
+            texture_height=self.texture_h,
+            panel_id="Central Panel",
+            min_size=20,
+            handle_size=5,
+            handle_threshold=10
+        )
+        
+        # Set up bounding box callbacks
+        self.bbox_renderer.set_callbacks(
+            on_change=self._on_bbox_change,
+            on_start_drag=self._on_bbox_start_drag,
+            on_end_drag=self._on_bbox_end_drag
+        )
+        
+        # Legacy compatibility attributes
         self.user_rect = None
         self.drag_active = False
         self.drag_mode = None
@@ -33,6 +52,33 @@ class CropRotateUI:
         self.max_area = None
         self.last_update_time = 0
         self.update_interval = 1 / 60
+    
+    def _on_bbox_change(self, bbox: BoundingBox) -> None:
+        """Called when the bounding box changes during drag."""
+        # Update legacy user_rect for compatibility
+        self.user_rect = bbox.to_dict()
+        self.update_rectangle_overlay()
+    
+    def _on_bbox_start_drag(self, bbox: BoundingBox) -> None:
+        """Called when bounding box drag starts."""
+        self.drag_active = True
+    
+    def _on_bbox_end_drag(self, bbox: BoundingBox) -> None:
+        """Called when bounding box drag ends."""
+        self.drag_active = False
+        self.user_rect = bbox.to_dict()
+    
+    def _update_bounding_box_from_max_rect(self) -> None:
+        """Update the bounding box renderer with the calculated max rect."""
+        if self.max_rect:
+            # Convert to BoundingBox and set bounds
+            max_bbox = BoundingBox.from_dict(self.max_rect)
+            self.bbox_renderer.set_bounds(max_bbox)
+            
+            # Set current bounding box if not set or if angle changed
+            if not self.bbox_renderer.bounding_box or (not self.drag_active and hasattr(self, 'prev_angle')):
+                self.bbox_renderer.set_bounding_box(max_bbox)
+                self.user_rect = max_bbox.to_dict()
 
     def update_image(self, sender, app_data, user_data):
         panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
@@ -81,9 +127,8 @@ class CropRotateUI:
             }
             self.max_area = inscribed_w * inscribed_h
 
-            # Inicializar o resetear user_rect
-            if not self.user_rect or (not self.drag_active and self.prev_angle != angle):
-                self.user_rect = self.max_rect.copy()
+            # Update bounding box renderer
+            self._update_bounding_box_from_max_rect()
             self.prev_angle = angle
 
             self.update_rectangle_overlay()
@@ -93,10 +138,10 @@ class CropRotateUI:
                 # Adjust rectangle coordinates relative to the rotated image, not the texture
                 rotated_image = self.image_processor.rotate_image(self.original_image, angle)
                 self.rotated_image = rotated_image.copy()
-                rx = self.user_rect["x"] - self.offset_x
-                ry = self.user_rect["y"] - self.offset_y
-                rw = self.user_rect["w"]
-                rh = self.user_rect["h"]
+                rx = int(self.user_rect["x"] - self.offset_x)
+                ry = int(self.user_rect["y"] - self.offset_y)
+                rw = int(self.user_rect["w"])
+                rh = int(self.user_rect["h"])
                 
                 # Ensure the rectangle is within the bounds of the rotated image
                 rx = max(0, rx)
@@ -240,146 +285,37 @@ class CropRotateUI:
 
         if self.rotated_texture is None:
             return
-        blended = self.rotated_texture.copy()
-
-        rx, ry, rw, rh = map(int, (self.user_rect["x"], self.user_rect["y"],
-                                   self.user_rect["w"], self.user_rect["h"]))
-        rx_clamped = max(rx, 0)
-        ry_clamped = max(ry, 0)
-        rx_end = min(rx + rw, self.texture_w)
-        ry_end = min(ry + rh, self.texture_h)
-
-        cv2.rectangle(blended, (rx_clamped, ry_clamped), (rx_end, ry_end), (0, 255, 0, 200), 2)
-        for corner in [(rx_clamped, ry_clamped), (rx_end, ry_clamped),
-                       (rx_clamped, ry_end), (rx_end, ry_end)]:
-            cv2.circle(blended, corner, radius=5, color=(255, 0, 0, 255), thickness=-1)
-
+        
+        # Use the bounding box renderer to draw the overlay
+        blended = self.bbox_renderer.render_on_texture(self.rotated_texture)
+        
         texture_data = blended.flatten().astype(np.float32) / 255.0
         dpg.set_value(self.texture_tag, texture_data)
 
     def on_mouse_down(self, sender, app_data):
         crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
-        if crop_mode:
-            if not self.user_rect:
-                return
-            self.drag_active = False
-            mouse_pos = dpg.get_mouse_pos()
-            panel_pos = dpg.get_item_pos("Central Panel")
-            panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
-            mouse_x = (mouse_pos[0] - panel_pos[0]) / panel_w * self.texture_w
-            mouse_y = (mouse_pos[1] - panel_pos[1]) / panel_h * self.texture_h
-
-            inside_rect = self.point_in_rect(mouse_x, mouse_y, self.user_rect)
-            if inside_rect:
-                self.drag_active = True
-                self.drag_mode = "move"
-                self.drag_offset = (mouse_x - self.user_rect["x"], mouse_y - self.user_rect["y"])
-                self.drag_start_rect = self.user_rect.copy()
-            else:
-                handle = self.hit_test_handles(mouse_x, mouse_y, self.user_rect)
-                if handle:
-                    self.drag_active = True
-                    self.drag_mode = "resize"
-                    self.drag_handle = handle
-                    self.drag_start_mouse = (mouse_x, mouse_y)
-                    self.drag_start_rect = self.user_rect.copy()
+        if crop_mode and self.bbox_renderer.bounding_box:
+            return self.bbox_renderer.on_mouse_down(sender, app_data)
+        return False
 
     def on_mouse_drag(self, sender, app_data):
         crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
-        if crop_mode:
-            if not self.drag_active:
-                return
-            mouse_pos = dpg.get_mouse_pos()
-            panel_pos = dpg.get_item_pos("Central Panel")
-            panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
-            mouse_x = (mouse_pos[0] - panel_pos[0]) / panel_w * self.texture_w
-            mouse_y = (mouse_pos[1] - panel_pos[1]) / panel_h * self.texture_h
-
-            if self.drag_mode == "move":
-                delta_x = mouse_x - self.drag_start_rect["x"] - self.drag_offset[0]
-                delta_y = mouse_y - self.drag_start_rect["y"] - self.drag_offset[1]
-                new_x = self.drag_start_rect["x"] + delta_x
-                new_y = self.drag_start_rect["y"] + delta_y
-                new_x = max(self.max_rect["x"], min(new_x, self.max_rect["x"] + self.max_rect["w"] - self.user_rect["w"]))
-                new_y = max(self.max_rect["y"], min(new_y, self.max_rect["y"] + self.max_rect["h"] - self.user_rect["h"]))
-                self.user_rect["x"], self.user_rect["y"] = new_x, new_y
-            elif self.drag_mode == "resize":
-                dx = mouse_x - self.drag_start_mouse[0]
-                dy = mouse_y - self.drag_start_mouse[1]
-                new_rect = self.drag_start_rect.copy()
-                fixed_corner = None
-                if self.drag_handle == "tl":
-                    new_rect["x"] += dx; new_rect["y"] += dy
-                    new_rect["w"] -= dx; new_rect["h"] -= dy
-                    fixed_corner = (self.drag_start_rect["x"] + self.drag_start_rect["w"], 
-                                    self.drag_start_rect["y"] + self.drag_start_rect["h"])
-                elif self.drag_handle == "tr":
-                    new_rect["y"] += dy; new_rect["w"] += dx; new_rect["h"] -= dy
-                    fixed_corner = (self.drag_start_rect["x"], self.drag_start_rect["y"] + self.drag_start_rect["h"])
-                elif self.drag_handle == "bl":
-                    new_rect["x"] += dx; new_rect["w"] -= dx; new_rect["h"] += dy
-                    fixed_corner = (self.drag_start_rect["x"] + self.drag_start_rect["w"], self.drag_start_rect["y"])
-                elif self.drag_handle == "br":
-                    new_rect["w"] += dx; new_rect["h"] += dy
-                    fixed_corner = (self.drag_start_rect["x"], self.drag_start_rect["y"])
-
-                min_size = 20
-                if new_rect["w"] < min_size: new_rect["w"] = min_size
-                if new_rect["h"] < min_size: new_rect["h"] = min_size
-                self.user_rect = self.clamp_rect(new_rect, self.max_rect, self.max_area, self.drag_handle, fixed_corner)
-
-            self.update_rectangle_overlay()
+        if crop_mode and self.bbox_renderer.bounding_box:
+            return self.bbox_renderer.on_mouse_drag(sender, app_data)
+        return False
 
     def on_mouse_release(self, sender, app_data):
         crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
-        if crop_mode:
-            self.drag_active = False
-            self.drag_mode = None
-            self.drag_handle = None
-            self.update_rectangle_overlay()
-
-    def clamp_rect(self, rect, max_rect, max_area, handle=None, fixed_corner=None):
-        if rect["x"] < max_rect["x"]: rect["x"] = max_rect["x"]
-        if rect["y"] < max_rect["y"]: rect["y"] = max_rect["y"]
-        if rect["x"] + rect["w"] > max_rect["x"] + max_rect["w"]:
-            rect["w"] = max_rect["x"] + max_rect["w"] - rect["x"]
-        if rect["y"] + rect["h"] > max_rect["y"] + max_rect["h"]:
-            rect["h"] = max_rect["y"] + max_rect["h"] - rect["y"]
-        
-        area = rect["w"] * rect["h"]
-        if area > max_area:
-            cx = rect["x"] + rect["w"] / 2
-            cy = rect["y"] + rect["h"] / 2
-            factor = np.sqrt(max_area / area)
-            new_w = rect["w"] * factor
-            new_h = rect["h"] * factor
-            rect["w"] = new_w; rect["h"] = new_h
-            rect["x"] = cx - new_w / 2; rect["y"] = cy - new_h / 2
-            if rect["x"] < max_rect["x"]: rect["x"] = max_rect["x"]
-            if rect["y"] < max_rect["y"]: rect["y"] = max_rect["y"]
-        return rect
-
-    def hit_test_handles(self, x, y, rect):
-        threshold = 10
-        handles = {
-            "tl": (rect["x"], rect["y"]),
-            "tr": (rect["x"] + rect["w"], rect["y"]),
-            "bl": (rect["x"], rect["y"] + rect["h"]),
-            "br": (rect["x"] + rect["w"], rect["y"] + rect["h"])
-        }
-        for handle, pos in handles.items():
-            if abs(x - pos[0]) <= threshold and abs(y - pos[1]) <= threshold:
-                return handle
-        return None
-
-    def point_in_rect(self, x, y, rect):
-        margin = 5
-        return (rect["x"] - margin <= x <= rect["x"] + rect["w"] + margin) and \
-               (rect["y"] - margin <= y <= rect["y"] + rect["h"] + margin)
+        if crop_mode and self.bbox_renderer.bounding_box:
+            return self.bbox_renderer.on_mouse_release(sender, app_data)
+        return False
 
     def set_to_max_rect(self, sender, app_data, user_data):
-        self.user_rect = self.max_rect.copy()
-        self.update_rectangle_overlay()
+        if self.max_rect:
+            max_bbox = BoundingBox.from_dict(self.max_rect)
+            self.bbox_renderer.set_bounding_box(max_bbox)
+            self.user_rect = max_bbox.to_dict()
+            self.update_rectangle_overlay()
 
     def crop_image(self, sender, app_data, user_data):
         angle = dpg.get_value(self.rotation_slider)
