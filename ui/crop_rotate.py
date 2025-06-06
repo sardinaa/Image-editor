@@ -32,8 +32,8 @@ class CropRotateUI:
             texture_height=self.texture_h,
             panel_id="Central Panel",
             min_size=20,
-            handle_size=5,
-            handle_threshold=10
+            handle_size=20,
+            handle_threshold=50
         )
         
         # Set up bounding box callbacks
@@ -55,6 +55,10 @@ class CropRotateUI:
     
     def _on_bbox_change(self, bbox: BoundingBox) -> None:
         """Called when the bounding box changes during drag."""
+        # Only process changes if we're actually dragging
+        if not self.drag_active:
+            return
+            
         # Update legacy user_rect for compatibility
         self.user_rect = bbox.to_dict()
         self.update_rectangle_overlay()
@@ -67,6 +71,8 @@ class CropRotateUI:
         """Called when bounding box drag ends."""
         self.drag_active = False
         self.user_rect = bbox.to_dict()
+        # Force immediate update when drag ends (bypass throttling)
+        self.update_rectangle_overlay(force_update=True)
     
     def _update_bounding_box_from_max_rect(self) -> None:
         """Update the bounding box renderer with the calculated max rect."""
@@ -277,9 +283,9 @@ class CropRotateUI:
         dpg.set_axis_limits("x_axis", x_min, x_max)
         dpg.set_axis_limits("y_axis", y_min, y_max)
 
-    def update_rectangle_overlay(self):
+    def update_rectangle_overlay(self, force_update=False):
         current_time = time.time()
-        if current_time - self.last_update_time < self.update_interval:
+        if not force_update and current_time - self.last_update_time < self.update_interval:
             return
         self.last_update_time = current_time
 
@@ -300,14 +306,19 @@ class CropRotateUI:
 
     def on_mouse_drag(self, sender, app_data):
         crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
-        if crop_mode and self.bbox_renderer.bounding_box:
+        # Only process drag if crop mode is active and we're actually dragging
+        if crop_mode and self.bbox_renderer.bounding_box and self.drag_active:
             return self.bbox_renderer.on_mouse_drag(sender, app_data)
         return False
 
     def on_mouse_release(self, sender, app_data):
         crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
         if crop_mode and self.bbox_renderer.bounding_box:
-            return self.bbox_renderer.on_mouse_release(sender, app_data)
+            result = self.bbox_renderer.on_mouse_release(sender, app_data)
+            # Additional safety: ensure drag_active is cleared even if bbox_renderer doesn't call end_drag
+            if self.drag_active and not self.bbox_renderer.is_dragging:
+                self.drag_active = False
+            return result
         return False
 
     def set_to_max_rect(self, sender, app_data, user_data):

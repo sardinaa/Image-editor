@@ -90,8 +90,8 @@ class BoundingBoxRenderer:
                  texture_height: int,
                  panel_id: str = "Central Panel",
                  min_size: float = 20,
-                 handle_size: float = 8,
-                 handle_threshold: float = 30):
+                 handle_size: float = 30,
+                 handle_threshold: float = 60):
         """
         Initialize the bounding box renderer.
         
@@ -218,14 +218,23 @@ class BoundingBoxRenderer:
         if not self.bounding_box:
             return None
         
-        # Convert input coordinates from texture/image coords to plot coords for comparison
-        plot_x = x
-        plot_y = self.texture_height - y  # Convert Y from texture coords to plot coords
+        box = self.bounding_box
         
-        handle_positions = self.get_handle_positions()
+        # Test handles in texture/image coordinate system directly
+        handle_positions = {
+            HandleType.TOP_LEFT: (box.x, box.y),
+            HandleType.TOP_RIGHT: (box.x + box.width, box.y),
+            HandleType.BOTTOM_LEFT: (box.x, box.y + box.height),
+            HandleType.BOTTOM_RIGHT: (box.x + box.width, box.y + box.height),
+            HandleType.TOP: (box.x + box.width / 2, box.y),
+            HandleType.BOTTOM: (box.x + box.width / 2, box.y + box.height),
+            HandleType.LEFT: (box.x, box.y + box.height / 2),
+            HandleType.RIGHT: (box.x + box.width, box.y + box.height / 2)
+        }
         
         for handle_type, (hx, hy) in handle_positions.items():
-            distance = abs(plot_x - hx) + abs(plot_y - hy)  # Manhattan distance
+            # Use Euclidean distance for better circular hit detection
+            distance = ((x - hx) ** 2 + (y - hy) ** 2) ** 0.5
             if distance <= self.handle_threshold:
                 return handle_type
         
@@ -239,24 +248,37 @@ class BoundingBoxRenderer:
         mouse_pos = dpg.get_mouse_pos()
         texture_x, texture_y = self.screen_to_texture_coords(mouse_pos[0], mouse_pos[1])
         
-        # Check for handle hits first
-        hit_handle = self.hit_test_handles(texture_x, texture_y)
-        if hit_handle:
-            self.is_dragging = True
-            self.drag_mode = DragMode.RESIZE
-            self.drag_handle = hit_handle
-            self.drag_start_mouse = (texture_x, texture_y)
-            self.drag_start_box = self.bounding_box.copy()
-            
-            if self.on_start_drag_callback:
-                self.on_start_drag_callback(self.bounding_box.copy())
-            return True
+        # Check if Control key is pressed for move mode
+        is_ctrl_pressed = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
         
-        # Check if clicking inside the box for move
+        # Check for handle hits first (only for resize mode)
+        if not is_ctrl_pressed:
+            hit_handle = self.hit_test_handles(texture_x, texture_y)
+            if hit_handle:
+                self.is_dragging = True
+                self.drag_mode = DragMode.RESIZE
+                self.drag_handle = hit_handle
+                self.drag_start_mouse = (texture_x, texture_y)
+                self.drag_start_box = self.bounding_box.copy()
+                
+                if self.on_start_drag_callback:
+                    self.on_start_drag_callback(self.bounding_box.copy())
+                return True
+        
+        # Check if clicking inside the box
         if self.bounding_box.contains_point(texture_x, texture_y):
             self.is_dragging = True
-            self.drag_mode = DragMode.MOVE
-            self.drag_offset = (texture_x - self.bounding_box.x, texture_y - self.bounding_box.y)
+            
+            if is_ctrl_pressed:
+                # Control + click = move mode
+                self.drag_mode = DragMode.MOVE
+                self.drag_offset = (texture_x - self.bounding_box.x, texture_y - self.bounding_box.y)
+            else:
+                # Regular click = resize mode (drag the nearest edge/corner)
+                self.drag_mode = DragMode.RESIZE
+                self.drag_handle = self._get_nearest_handle(texture_x, texture_y)
+                self.drag_start_mouse = (texture_x, texture_y)
+            
             self.drag_start_box = self.bounding_box.copy()
             
             if self.on_start_drag_callback:
@@ -268,6 +290,16 @@ class BoundingBoxRenderer:
     def on_mouse_drag(self, sender, app_data) -> bool:
         """Handle mouse drag events. Returns True if event was handled."""
         if not self.is_dragging or not self.bounding_box or not self.drag_start_box:
+            return False
+        
+        # Additional safety check: ensure left mouse button is still pressed
+        # This prevents accidental modifications if mouse events arrive after release
+        if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
+            # Force end the drag if mouse button is not pressed
+            self.is_dragging = False
+            self.drag_mode = DragMode.NONE
+            self.drag_handle = None
+            self.drag_start_box = None
             return False
         
         mouse_pos = dpg.get_mouse_pos()
@@ -287,12 +319,9 @@ class BoundingBoxRenderer:
         
         elif self.drag_mode == DragMode.RESIZE:
             # Resize based on the handle being dragged
-            dx = texture_x - self.drag_start_mouse[0]
-            dy = texture_y - self.drag_start_mouse[1]
-            
-            self._resize_box(self.drag_handle, dx, dy)
+            self._resize_box(self.drag_handle, texture_x, texture_y)
         
-        # Call change callback
+        # Call change callback during drag for real-time visual feedback
         if self.on_change_callback:
             self.on_change_callback(self.bounding_box.copy())
         
@@ -304,18 +333,23 @@ class BoundingBoxRenderer:
             return False
         
         was_dragging = self.is_dragging
+        drag_mode = self.drag_mode
+        
         self.is_dragging = False
         self.drag_mode = DragMode.NONE
         self.drag_handle = None
         self.drag_start_box = None
         
-        if was_dragging and self.on_end_drag_callback:
-            self.on_end_drag_callback(self.bounding_box.copy())
+        if was_dragging:
+            # Call end drag callback only - no need for change callback here
+            # as it would trigger after drag_active is already set to False
+            if self.on_end_drag_callback:
+                self.on_end_drag_callback(self.bounding_box.copy())
         
         return was_dragging
     
-    def _resize_box(self, handle: HandleType, dx: float, dy: float) -> None:
-        """Resize the bounding box based on handle and deltas."""
+    def _resize_box(self, handle: HandleType, current_x: float, current_y: float) -> None:
+        """Resize the bounding box based on handle and current mouse position."""
         if not self.drag_start_box:
             return
         
@@ -323,44 +357,79 @@ class BoundingBoxRenderer:
         start_box = self.drag_start_box
         new_box = start_box.copy()
         
-        # Apply resize based on handle
+        # Calculate new boundaries based on current mouse position and fixed opposite point
         if handle == HandleType.TOP_LEFT:
-            new_box.x += dx
-            new_box.y += dy
-            new_box.width -= dx
-            new_box.height -= dy
+            # Fixed point: bottom right
+            fixed_x = start_box.x + start_box.width
+            fixed_y = start_box.y + start_box.height
+            new_box.x = min(current_x, fixed_x)
+            new_box.y = min(current_y, fixed_y)
+            new_box.width = abs(fixed_x - current_x)
+            new_box.height = abs(fixed_y - current_y)
+            
         elif handle == HandleType.TOP_RIGHT:
-            new_box.y += dy
-            new_box.width += dx
-            new_box.height -= dy
+            # Fixed point: bottom left
+            fixed_x = start_box.x
+            fixed_y = start_box.y + start_box.height
+            new_box.x = min(current_x, fixed_x)
+            new_box.y = min(current_y, fixed_y)
+            new_box.width = abs(current_x - fixed_x)
+            new_box.height = abs(fixed_y - current_y)
+            
         elif handle == HandleType.BOTTOM_LEFT:
-            new_box.x += dx
-            new_box.width -= dx
-            new_box.height += dy
+            # Fixed point: top right
+            fixed_x = start_box.x + start_box.width
+            fixed_y = start_box.y
+            new_box.x = min(current_x, fixed_x)
+            new_box.y = min(current_y, fixed_y)
+            new_box.width = abs(fixed_x - current_x)
+            new_box.height = abs(current_y - fixed_y)
+            
         elif handle == HandleType.BOTTOM_RIGHT:
-            new_box.width += dx
-            new_box.height += dy
+            # Fixed point: top left
+            fixed_x = start_box.x
+            fixed_y = start_box.y
+            new_box.x = fixed_x
+            new_box.y = fixed_y
+            new_box.width = abs(current_x - fixed_x)
+            new_box.height = abs(current_y - fixed_y)
+            
         elif handle == HandleType.TOP:
-            new_box.y += dy
-            new_box.height -= dy
+            # Fixed edge: bottom
+            fixed_y = start_box.y + start_box.height
+            new_box.y = min(current_y, fixed_y)
+            new_box.height = abs(fixed_y - current_y)
+            
         elif handle == HandleType.BOTTOM:
-            new_box.height += dy
+            # Fixed edge: top
+            fixed_y = start_box.y
+            new_box.y = fixed_y
+            new_box.height = abs(current_y - fixed_y)
+            
         elif handle == HandleType.LEFT:
-            new_box.x += dx
-            new_box.width -= dx
+            # Fixed edge: right
+            fixed_x = start_box.x + start_box.width
+            new_box.x = min(current_x, fixed_x)
+            new_box.width = abs(fixed_x - current_x)
+            
         elif handle == HandleType.RIGHT:
-            new_box.width += dx
+            # Fixed edge: left
+            fixed_x = start_box.x
+            new_box.x = fixed_x
+            new_box.width = abs(current_x - fixed_x)
         
         # Ensure minimum size
         if new_box.width < self.min_size:
-            if handle in [HandleType.TOP_LEFT, HandleType.BOTTOM_LEFT, HandleType.LEFT]:
-                new_box.x = start_box.x + start_box.width - self.min_size
+            # Maintain center when correcting width
+            center_x = new_box.x + new_box.width / 2
             new_box.width = self.min_size
+            new_box.x = center_x - self.min_size / 2
         
         if new_box.height < self.min_size:
-            if handle in [HandleType.TOP_LEFT, HandleType.TOP_RIGHT, HandleType.TOP]:
-                new_box.y = start_box.y + start_box.height - self.min_size
+            # Maintain center when correcting height
+            center_y = new_box.y + new_box.height / 2
             new_box.height = self.min_size
+            new_box.y = center_y - self.min_size / 2
         
         # Apply bounds if set
         if self.bounds:
@@ -395,16 +464,23 @@ class BoundingBoxRenderer:
         
         # Draw corner handles using image coordinates directly (not plot coordinates)
         # In image coordinates: (0,0) is top-left, Y increases downward
-        corner_positions = {
+        handle_positions = {
             HandleType.TOP_LEFT: (box.x, box.y),
             HandleType.TOP_RIGHT: (box.x + box.width, box.y),
             HandleType.BOTTOM_LEFT: (box.x, box.y + box.height),
-            HandleType.BOTTOM_RIGHT: (box.x + box.width, box.y + box.height)
+            HandleType.BOTTOM_RIGHT: (box.x + box.width, box.y + box.height),
+            HandleType.TOP: (box.x + box.width / 2, box.y),
+            HandleType.BOTTOM: (box.x + box.width / 2, box.y + box.height),
+            HandleType.LEFT: (box.x, box.y + box.height / 2),
+            HandleType.RIGHT: (box.x + box.width, box.y + box.height / 2)
         }
         
-        for handle_type, (hx, hy) in corner_positions.items():
+        for handle_type, (hx, hy) in handle_positions.items():
             hx_int = int(max(0, min(hx, self.texture_width - 1)))
             hy_int = int(max(0, min(hy, self.texture_height - 1)))
+            # Draw handle with white border for better visibility
+            cv2.circle(result, (hx_int, hy_int), int(self.handle_size + 2), 
+                      (255, 255, 255, 255), -1)
             cv2.circle(result, (hx_int, hy_int), int(self.handle_size), 
                       self.handle_color, -1)
         
@@ -433,7 +509,48 @@ class BoundingBoxRenderer:
         self.drag_mode = DragMode.NONE
         self.drag_handle = None
         self.drag_start_box = None
-
+    
+    def _get_nearest_handle(self, x: float, y: float) -> HandleType:
+        """
+        Determine the nearest handle to the given point for resize operations.
+        This is used when clicking inside the box without Control to resize.
+        """
+        if not self.bounding_box:
+            return HandleType.BOTTOM_RIGHT  # Default fallback
+        
+        box = self.bounding_box
+        
+        # Calculate relative position within the box (0.0 to 1.0)
+        rel_x = (x - box.x) / box.width if box.width > 0 else 0.5
+        rel_y = (y - box.y) / box.height if box.height > 0 else 0.5
+        
+        # Clamp to [0, 1] range
+        rel_x = max(0.0, min(1.0, rel_x))
+        rel_y = max(0.0, min(1.0, rel_y))
+        
+        # Determine which handle is closest based on relative position
+        # Divide the box into 9 regions (3x3 grid)
+        if rel_x < 0.33:  # Left third
+            if rel_y < 0.33:  # Top third
+                return HandleType.TOP_LEFT
+            elif rel_y > 0.67:  # Bottom third
+                return HandleType.BOTTOM_LEFT
+            else:  # Middle third
+                return HandleType.LEFT
+        elif rel_x > 0.67:  # Right third
+            if rel_y < 0.33:  # Top third
+                return HandleType.TOP_RIGHT
+            elif rel_y > 0.67:  # Bottom third
+                return HandleType.BOTTOM_RIGHT
+            else:  # Middle third
+                return HandleType.RIGHT
+        else:  # Middle third
+            if rel_y < 0.33:  # Top third
+                return HandleType.TOP
+            elif rel_y > 0.67:  # Bottom third
+                return HandleType.BOTTOM
+            else:  # Center - default to bottom-right for expansion
+                return HandleType.BOTTOM_RIGHT
 
 class BoundingBoxManager:
     """

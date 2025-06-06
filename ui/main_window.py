@@ -257,30 +257,27 @@ class MainWindow:
     def on_mouse_wheel(self, sender, app_data):
         # Custom zoom handling
         if dpg.does_item_exist("image_plot") and self.crop_rotate_ui:
-            # Only handle zoom if we're not in crop mode
-            crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
-            if not crop_mode:
-                # Get current plot limits
-                x_limits = dpg.get_axis_limits("x_axis")
-                y_limits = dpg.get_axis_limits("y_axis")
-                
-                # Calculate zoom factor based on wheel direction
-                zoom_factor = 0.9 if app_data > 0 else 1.1
-                
-                # Calculate new limits
-                x_range = x_limits[1] - x_limits[0]
-                y_range = y_limits[1] - y_limits[0]
-                x_center = (x_limits[0] + x_limits[1]) / 2
-                y_center = (y_limits[0] + y_limits[1]) / 2
-                
-                new_x_range = x_range * zoom_factor
-                new_y_range = y_range * zoom_factor
-                
-                # Set new limits
-                dpg.set_axis_limits("x_axis", x_center - new_x_range/2, x_center + new_x_range/2)
-                dpg.set_axis_limits("y_axis", y_center - new_y_range/2, y_center + new_y_range/2)
-                
-                return True  # Consume the event
+            # Get current plot limits
+            x_limits = dpg.get_axis_limits("x_axis")
+            y_limits = dpg.get_axis_limits("y_axis")
+            
+            # Calculate zoom factor based on wheel direction
+            zoom_factor = 0.9 if app_data > 0 else 1.1
+            
+            # Calculate new limits
+            x_range = x_limits[1] - x_limits[0]
+            y_range = y_limits[1] - y_limits[0]
+            x_center = (x_limits[0] + x_limits[1]) / 2
+            y_center = (y_limits[0] + y_limits[1]) / 2
+            
+            new_x_range = x_range * zoom_factor
+            new_y_range = y_range * zoom_factor
+            
+            # Set new limits
+            dpg.set_axis_limits("x_axis", x_center - new_x_range/2, x_center + new_x_range/2)
+            dpg.set_axis_limits("y_axis", y_center - new_y_range/2, y_center + new_y_range/2)
+            
+            return True  # Consume the event
         return False
 
     def get_tool_parameters(self):
