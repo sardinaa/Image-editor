@@ -121,8 +121,8 @@ class BoundingBoxRenderer:
         self.drag_offset: Tuple[float, float] = (0, 0)
         
         # Visual settings
-        self.box_color = (0, 255, 0, 255)  # Green
-        self.handle_color = (255, 0, 0, 255)  # Red
+        self.box_color = (64, 64, 64, 255)  # Green
+        self.handle_color = (13, 115, 184, 255)  # Red
         self.box_thickness = 2
         
         # Callbacks
@@ -479,9 +479,7 @@ class BoundingBoxRenderer:
             hx_int = int(max(0, min(hx, self.texture_width - 1)))
             hy_int = int(max(0, min(hy, self.texture_height - 1)))
             # Draw handle with white border for better visibility
-            cv2.circle(result, (hx_int, hy_int), int(self.handle_size + 2), 
-                      (255, 255, 255, 255), -1)
-            cv2.circle(result, (hx_int, hy_int), int(self.handle_size), 
+            cv2.circle(result, (hx_int, hy_int), 10, 
                       self.handle_color, -1)
         
         return result
