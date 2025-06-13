@@ -78,7 +78,6 @@ class BoundingBox:
         self.x = cx - self.width / 2
         self.y = cy - self.height / 2
 
-
 class BoundingBoxRenderer:
     """
     A reusable component for rendering and interacting with bounding boxes.
@@ -143,9 +142,9 @@ class BoundingBoxRenderer:
             self.bounding_box.clamp_to_bounds(self.bounds)
     
     def set_callbacks(self, 
-                     on_change: Optional[Callable[[BoundingBox], None]] = None,
-                     on_start_drag: Optional[Callable[[BoundingBox], None]] = None,
-                     on_end_drag: Optional[Callable[[BoundingBox], None]] = None) -> None:
+                      on_change: Optional[Callable[[BoundingBox], None]] = None,
+                      on_start_drag: Optional[Callable[[BoundingBox], None]] = None,
+                      on_end_drag: Optional[Callable[[BoundingBox], None]] = None) -> None:
         """Set callback functions for bounding box events."""
         if on_change:
             self.on_change_callback = on_change
@@ -242,11 +241,22 @@ class BoundingBoxRenderer:
     
     def on_mouse_down(self, sender, app_data) -> bool:
         """Handle mouse down events. Returns True if event was handled."""
-        if not self.bounding_box:
-            return False
-        
         mouse_pos = dpg.get_mouse_pos()
         texture_x, texture_y = self.screen_to_texture_coords(mouse_pos[0], mouse_pos[1])
+        
+        # If no bounding box exists, start creating a new one
+        if not self.bounding_box:
+            # Create a new bounding box starting from this point
+            self.bounding_box = BoundingBox(texture_x, texture_y, 0, 0)
+            self.is_dragging = True
+            self.drag_mode = DragMode.RESIZE
+            self.drag_handle = HandleType.BOTTOM_RIGHT  # Growing from top-left
+            self.drag_start_mouse = (texture_x, texture_y)
+            self.drag_start_box = self.bounding_box.copy()
+            
+            if self.on_start_drag_callback:
+                self.on_start_drag_callback(self.bounding_box.copy())
+            return True
         
         # Check if Control key is pressed for move mode
         is_ctrl_pressed = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)

@@ -19,6 +19,10 @@ class ToolPanel:
         self.current_mask_index = -1
         self.global_params = None  # Store global parameters when switching to mask mode
         self.mask_params = {}  # Store parameters for each mask {mask_index: params}
+        
+        # Multiple mask selection state
+        self.selected_mask_indices = set()  # Set of selected mask indices
+        self.mask_checkboxes = {}  # Dictionary to track checkbox tags {mask_index: checkbox_tag}
 
     def draw(self):
         with dpg.group(horizontal=False):
@@ -85,8 +89,25 @@ class ToolPanel:
                 with dpg.group(horizontal=True):
                     dpg.add_button(label="Auto Segment", tag="auto_segment_btn", callback=self._auto_segment, width=85, height=20)
                     dpg.add_button(label="Clear Masks", tag="clear_all_masks_btn", callback=self._clear_all_masks, width=85, height=20)
-                dpg.add_checkbox(label="Box Selection Mode", tag="box_selection_mode", 
-                               default_value=False, callback=self._toggle_box_selection)
+                
+                # Unified segmentation mode (replaces both segmentation mode and box selection mode)
+                dpg.add_checkbox(label="Box Selection Mode", tag="segmentation_mode", 
+                               default_value=False, callback=self._toggle_segmentation_mode)
+                
+                # Segmentation control buttons (initially hidden)
+                with dpg.group(horizontal=True, tag="segmentation_controls", show=False):
+                    dpg.add_button(label="Confirm", tag="confirm_segmentation_btn", callback=self._confirm_segmentation, 
+                                 width=82, height=20)
+                    dpg.add_button(label="Cancel", tag="cancel_segmentation_btn", callback=self._cancel_segmentation, 
+                                 width=82, height=20)
+                
+                # Loading indicator for segmentation (initially hidden)
+                with dpg.group(tag="segmentation_loading_group", show=False):
+                    dpg.add_spacer(height=3)
+                    with dpg.group(horizontal=True):
+                        dpg.add_loading_indicator(tag="segmentation_loading_indicator", style=1, radius=2)
+                        dpg.add_text("Processing...", color=[200, 200, 200], tag="segmentation_loading_text")
+                    dpg.add_spacer(height=3)
                 
                 dpg.add_separator()
                 dpg.add_spacer(height=5)
@@ -101,9 +122,14 @@ class ToolPanel:
                 
                 # Mask management buttons
                 with dpg.group(horizontal=True):
-                    dpg.add_button(label="Delete Mask", tag="delete_mask_btn", callback=self._delete_selected_mask, width=82, height=20)
+                    dpg.add_button(label="Delete Selected", tag="delete_mask_btn", callback=self._delete_selected_masks, width=82, height=20)
                     dpg.add_button(label="Rename Mask", tag="rename_mask_btn", callback=self._rename_selected_mask, width=82, height=20)
-                dpg.add_listbox(items=[], tag="mask_list", callback=self._mask_selected, num_items=5)
+                
+                # Create table for mask selection with multiple selection support
+                with dpg.table(tag="mask_table", header_row=True, borders_innerH=True, borders_outerH=True, 
+                             borders_innerV=True, borders_outerV=True, row_background=True, 
+                             policy=dpg.mvTable_SizingFixedFit, height=120):
+                    dpg.add_table_column(label="Mask Name", width_stretch=True)
             
             dpg.add_separator()
             dpg.add_spacer(height=2)
@@ -178,6 +204,114 @@ class ToolPanel:
         print(f"Tool panel returning curves: {self.curves}")  # Debug output
         return params
 
+    def _create_row_callback(self, mask_index):
+        """Create a proper callback for row selection with correct mask index"""
+        return lambda s, a, u: self._mask_row_clicked(s, a, u, mask_index)
+    
+
+    
+    def _mask_row_clicked(self, sender, app_data, user_data, mask_index):
+        """Handle row clicks for single and multiple selection"""
+        # Check if Ctrl is pressed for multiple selection
+        is_ctrl_pressed = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+        
+        if is_ctrl_pressed:
+            # Multiple selection mode - toggle this mask's selection
+            if mask_index in self.selected_mask_indices:
+                # Deselect this mask
+                self.selected_mask_indices.discard(mask_index)
+                if mask_index in self.mask_checkboxes:
+                    selectable_tag = self.mask_checkboxes[mask_index]
+                    if dpg.does_item_exist(selectable_tag):
+                        dpg.set_value(selectable_tag, False)
+                print(f"Deselected mask {mask_index}, total selected: {len(self.selected_mask_indices)}")
+            else:
+                # Select this mask
+                self.selected_mask_indices.add(mask_index)
+                if mask_index in self.mask_checkboxes:
+                    selectable_tag = self.mask_checkboxes[mask_index]
+                    if dpg.does_item_exist(selectable_tag):
+                        dpg.set_value(selectable_tag, True)
+                print(f"Selected mask {mask_index}, total selected: {len(self.selected_mask_indices)}")
+        else:
+            # Single selection mode - clear all other selections and select only this mask
+            for idx in list(self.selected_mask_indices):
+                if idx != mask_index and idx in self.mask_checkboxes:
+                    selectable_tag = self.mask_checkboxes[idx]
+                    if dpg.does_item_exist(selectable_tag):
+                        dpg.set_value(selectable_tag, False)
+            
+            # Clear selected indices and add only this one
+            self.selected_mask_indices.clear()
+            self.selected_mask_indices.add(mask_index)
+            
+            # Update the selectable for this mask
+            if mask_index in self.mask_checkboxes:
+                selectable_tag = self.mask_checkboxes[mask_index]
+                if dpg.does_item_exist(selectable_tag):
+                    dpg.set_value(selectable_tag, True)
+            
+            print(f"Quick selected mask {mask_index}")
+        
+        # Update overlay and apply editing logic
+        self._update_mask_overlays_visibility()
+        
+        # Apply editing logic based on selection count
+        if len(self.selected_mask_indices) == 1:
+            selected_index = next(iter(self.selected_mask_indices))
+            self._apply_single_mask_editing(selected_index)
+        elif len(self.selected_mask_indices) == 0:
+            # No masks selected - switch to global editing
+            if self.mask_editing_enabled:
+                self._disable_mask_editing()
+        else:
+            # Multiple masks selected - disable mask editing (can't edit multiple masks simultaneously)
+            if self.mask_editing_enabled:
+                self._disable_mask_editing()
+            print(f"Multiple masks selected ({len(self.selected_mask_indices)}), mask editing disabled")
+    
+    def _apply_single_mask_editing(self, mask_index):
+        """Apply mask editing to a single selected mask"""
+        # Check if masks are enabled (main checkbox) to apply mask editing
+        masks_enabled = True
+        if dpg.does_item_exist("mask_section_toggle"):
+            masks_enabled = dpg.get_value("mask_section_toggle")
+        
+        if masks_enabled:
+            # Masks are enabled - apply mask editing to selected mask
+            self._apply_mask_editing(mask_index)
+        else:
+            # Masks are disabled - ensure we're in global editing mode
+            if self.mask_editing_enabled:
+                self._disable_mask_editing()
+    
+    def _update_mask_overlays_visibility(self):
+        """Update the visibility of mask overlays based on selection"""
+        if not self.main_window or not hasattr(self.main_window, 'layer_masks'):
+            return
+        
+        # Check if overlay should be shown
+        show_overlay = True
+        if dpg.does_item_exist("show_mask_overlay"):
+            show_overlay = dpg.get_value("show_mask_overlay")
+        
+        if not show_overlay:
+            return
+        
+        # Hide all masks first
+        for idx in range(len(self.main_window.layer_masks)):
+            mask_tag = f"mask_series_{idx}"
+            if dpg.does_item_exist(mask_tag):
+                dpg.configure_item(mask_tag, show=False)
+        
+        # Show selected masks
+        for selected_index in self.selected_mask_indices:
+            if selected_index < len(self.main_window.layer_masks):
+                mask_tag = f"mask_series_{selected_index}"
+                if dpg.does_item_exist(mask_tag):
+                    dpg.configure_item(mask_tag, show=True)
+                    print(f"Showing mask overlay {selected_index}")
+
     def _mask_selected(self, sender, app_data, user_data):
         # When a mask is selected, update visibility and apply mask editing based on main masks checkbox
         if not app_data:
@@ -203,9 +337,6 @@ class ToolPanel:
                     if show_overlay:
                         self.main_window.show_selected_mask(selected_index)
                     
-                    # Update current mask index for potential mask editing
-                    self.current_mask_index = selected_index
-                    
                     # Check if masks are enabled (main checkbox) to apply mask editing
                     masks_enabled = True
                     if dpg.does_item_exist("mask_section_toggle"):
@@ -213,14 +344,14 @@ class ToolPanel:
                     
                     if masks_enabled:
                         # Masks are enabled - apply mask editing to selected mask
+                        # Note: _apply_mask_editing will handle updating current_mask_index internally
                         self._apply_mask_editing(selected_index)
+                        # Note: _apply_mask_editing now handles the image update internally
                     else:
                         # Masks are disabled - ensure we're in global editing mode
                         if self.mask_editing_enabled:
                             self._disable_mask_editing()
-                    
-                    # Trigger image update
-                    self._param_changed(sender, app_data, user_data)
+                        # Note: _disable_mask_editing now handles the image update internally
                 else:
                     print("Main window reference not available")
                     
@@ -230,25 +361,80 @@ class ToolPanel:
             print("Mask list widget does not exist")
     
     def update_masks(self, masks, mask_names=None):
-        # Create listbox entries based on custom names or default naming
+        # Create mask entries based on custom names or default naming
         if mask_names and len(mask_names) >= len(masks):
             items = mask_names[:len(masks)]
         else:
             items = [f"Mask {idx+1}" for idx in range(len(masks))]
         
-        if dpg.does_item_exist("mask_list"):
-            dpg.configure_item("mask_list", items=items)
+        # Clear existing table rows
+        if dpg.does_item_exist("mask_table"):
+            # Get all existing rows and delete them
+            for mask_index in list(self.mask_checkboxes.keys()):
+                row_tag = f"mask_row_{mask_index}"
+                if dpg.does_item_exist(row_tag):
+                    dpg.delete_item(row_tag)
+            
+            # Clear our tracking dictionaries
+            self.mask_checkboxes.clear()
+            self.selected_mask_indices.clear()
+            
+            # Add new rows for each mask
+            for idx, mask_name in enumerate(items):
+                with dpg.table_row(tag=f"mask_row_{idx}", parent="mask_table"):
+                    # Mask name column (selectable for multiple selection)
+                    dpg.add_selectable(label=mask_name, tag=f"mask_selectable_{idx}",
+                                     callback=self._create_row_callback(idx),
+                                     span_columns=True)
+                
+                # Track the selectable (no longer using checkboxes)
+                self.mask_checkboxes[idx] = f"mask_selectable_{idx}"
         else:
-            print("Mask list widget does not exist.")
+            print("Mask table widget does not exist.")
             
         # Auto-disable mask editing if no masks are available
         if len(masks) == 0:
             self.reset_mask_editing()
     
+    def get_selected_mask_indices(self):
+        """Get the currently selected mask indices"""
+        return list(self.selected_mask_indices)
+    
+    def select_mask(self, mask_index, add_to_selection=False):
+        """Programmatically select a mask"""
+        if not add_to_selection:
+            # Clear existing selection
+            for idx in list(self.selected_mask_indices):
+                if idx in self.mask_checkboxes:
+                    checkbox_tag = self.mask_checkboxes[idx]
+                    if dpg.does_item_exist(checkbox_tag):
+                        dpg.set_value(checkbox_tag, False)
+            self.selected_mask_indices.clear()
+        
+        # Add new selection
+        if mask_index in self.mask_checkboxes:
+            checkbox_tag = self.mask_checkboxes[mask_index]
+            if dpg.does_item_exist(checkbox_tag):
+                dpg.set_value(checkbox_tag, True)
+                self.selected_mask_indices.add(mask_index)
+                self._update_mask_overlays_visibility()
+                
+                # Apply editing if single selection
+                if len(self.selected_mask_indices) == 1:
+                    self._apply_single_mask_editing(mask_index)
+
     def reset_mask_editing(self):
         """Reset mask editing mode and clear overlays"""
         # Disable mask editing mode
         self._disable_mask_editing()
+        
+        # Clear selection state
+        self.selected_mask_indices.clear()
+        
+        # Uncheck all checkboxes
+        for checkbox_tag in self.mask_checkboxes.values():
+            if dpg.does_item_exist(checkbox_tag):
+                dpg.set_value(checkbox_tag, False)
         
         # Hide all mask overlays
         if dpg.does_item_exist("show_mask_overlay"):
@@ -259,52 +445,49 @@ class ToolPanel:
         if self.histogram_panel:
             self.histogram_panel.update_histogram(image)
     
-    def _delete_selected_mask(self, sender, app_data, user_data):
-        """Delete the currently selected mask"""
-        # Get the currently selected mask from the listbox
-        if not dpg.does_item_exist("mask_list"):
-            return
-            
-        current_selection = dpg.get_value("mask_list")
-        if not current_selection:
-            print("No mask selected for deletion")
+    def _delete_selected_masks(self, sender, app_data, user_data):
+        """Delete all currently selected masks"""
+        if not self.selected_mask_indices:
+            print("No masks selected for deletion")
             return
         
-        # Find the index of the selected mask in the list
-        current_items = dpg.get_item_configuration("mask_list")["items"]
-        try:
-            selected_index = current_items.index(current_selection)
-            print(f"Deleting mask: {current_selection}, index: {selected_index}")
-            
-            # Delete the mask through main window
-            if self.main_window:
-                self.main_window.delete_mask(selected_index)
-            else:
-                print("Main window reference not available")
-        except ValueError as e:
-            print(f"Error finding mask index for '{current_selection}': {e}")
+        # Convert to sorted list (delete from highest index to lowest to avoid index shifting)
+        indices_to_delete = sorted(self.selected_mask_indices, reverse=True)
+        
+        print(f"Deleting masks at indices: {indices_to_delete}")
+        
+        # Delete masks through main window
+        if self.main_window:
+            for mask_index in indices_to_delete:
+                self.main_window.delete_mask(mask_index)
+        else:
+            print("Main window reference not available")
+        
+        # Clear selection since masks were deleted
+        self.selected_mask_indices.clear()
     
     def _rename_selected_mask(self, sender, app_data, user_data):
-        """Rename the currently selected mask"""
-        # Get the currently selected mask from the listbox
-        if not dpg.does_item_exist("mask_list"):
-            return
-            
-        current_selection = dpg.get_value("mask_list")
-        if not current_selection:
+        """Rename the currently selected mask (works only with single selection)"""
+        if len(self.selected_mask_indices) == 0:
             print("No mask selected for renaming")
             return
+        elif len(self.selected_mask_indices) > 1:
+            print("Multiple masks selected. Please select only one mask for renaming.")
+            return
         
-        # Find the index of the selected mask in the list
-        current_items = dpg.get_item_configuration("mask_list")["items"]
-        try:
-            selected_index = current_items.index(current_selection)
-            print(f"Renaming mask: {current_selection}, index: {selected_index}")
-            
-            # Show rename dialog
-            self._show_rename_dialog(selected_index, current_selection)
-        except ValueError as e:
-            print(f"Error finding mask index for '{current_selection}': {e}")
+        # Get the single selected mask index
+        selected_index = next(iter(self.selected_mask_indices))
+        
+        # Get current mask name
+        current_name = f"Mask {selected_index + 1}"
+        if (self.main_window and hasattr(self.main_window, 'mask_names') and 
+            self.main_window.mask_names and selected_index < len(self.main_window.mask_names)):
+            current_name = self.main_window.mask_names[selected_index]
+        
+        print(f"Renaming mask at index {selected_index}, current name: {current_name}")
+        
+        # Show rename dialog
+        self._show_rename_dialog(selected_index, current_name)
     
     def _show_rename_dialog(self, mask_index, current_name):
         """Show a dialog to rename the mask"""
@@ -341,26 +524,14 @@ class ToolPanel:
         show_overlay = dpg.get_value("show_mask_overlay")
         
         if self.main_window and hasattr(self.main_window, 'layer_masks'):
-            # Get currently selected mask index
-            current_selection = None
-            selected_index = -1
-            
-            if dpg.does_item_exist("mask_list"):
-                current_selection = dpg.get_value("mask_list")
-                if current_selection:
-                    current_items = dpg.get_item_configuration("mask_list")["items"]
-                    try:
-                        selected_index = current_items.index(current_selection)
-                    except ValueError:
-                        selected_index = -1
-            
             if show_overlay:
-                # Show the selected mask overlay if there's a selection
-                if selected_index >= 0 and selected_index < len(self.main_window.layer_masks):
-                    self.main_window.show_selected_mask(selected_index)
-                    print(f"Showing mask overlay for: {current_selection}")
+                # Show overlays for selected masks
+                self._update_mask_overlays_visibility()
+                if self.selected_mask_indices:
+                    selected_list = list(self.selected_mask_indices)
+                    print(f"Showing mask overlays for selected masks: {selected_list}")
                 elif len(self.main_window.layer_masks) > 0:
-                    # Show first mask if no specific selection
+                    # Show first mask if none selected
                     self.main_window.show_selected_mask(0)
                     print("Showing first mask overlay")
             else:
@@ -393,65 +564,48 @@ class ToolPanel:
                     dpg.configure_item(mask_tag, show=False)
             print("Hidden all mask overlays (masks disabled)")
             
-            # Disable box selection mode when masks are disabled
-            if dpg.does_item_exist("box_selection_mode"):
-                dpg.set_value("box_selection_mode", False)
-                # Also disable it in the main window
-                if hasattr(self.main_window, 'toggle_box_selection_mode'):
-                    self.main_window.toggle_box_selection_mode(None, False)
-                print("Disabled box selection mode (masks disabled)")
+            # Disable segmentation mode when masks are disabled
+            if dpg.does_item_exist("segmentation_mode"):
+                dpg.set_value("segmentation_mode", False)
+                if hasattr(self.main_window, 'disable_segmentation_mode'):
+                    self.main_window.disable_segmentation_mode()
+                print("Disabled segmentation mode (masks disabled)")
             
-            # Disable mask-related UI controls
-            mask_controls = ["auto_segment_btn", "clear_all_masks_btn", "box_selection_mode", 
-                           "show_mask_overlay", "delete_mask_btn", "rename_mask_btn", "mask_list"]
+            # Disable mask-related UI controls (only controls that support enabled property)
+            mask_controls = ["auto_segment_btn", "clear_all_masks_btn", "segmentation_mode", 
+                           "show_mask_overlay", "delete_mask_btn", "rename_mask_btn"]
             for control in mask_controls:
                 if dpg.does_item_exist(control):
                     dpg.configure_item(control, enabled=False)
+            
+            # Hide container controls that don't support enabled property
+            container_controls = ["segmentation_controls", "mask_table"]
+            for control in container_controls:
+                if dpg.does_item_exist(control):
+                    dpg.configure_item(control, show=False)
             
             # Switch to global editing mode when masks are disabled
             self._disable_mask_editing()
             print("Switched to global editing mode")
         
         elif current and self.main_window and hasattr(self.main_window, 'layer_masks'):
-            # Re-enable mask-related UI controls
-            mask_controls = ["auto_segment_btn", "clear_all_masks_btn", "box_selection_mode", 
-                           "show_mask_overlay", "delete_mask_btn", "rename_mask_btn", "mask_list"]
+            # Re-enable mask-related UI controls (only controls that support enabled property)
+            mask_controls = ["auto_segment_btn", "clear_all_masks_btn", "segmentation_mode",
+                           "show_mask_overlay", "delete_mask_btn", "rename_mask_btn"]
             for control in mask_controls:
                 if dpg.does_item_exist(control):
                     dpg.configure_item(control, enabled=True)
             
-            # When mask section is shown again, check if a mask is selected for editing
-            if dpg.does_item_exist("mask_list"):
-                current_selection = dpg.get_value("mask_list")
-                if current_selection:
-                    # Apply mask editing to selected mask
-                    current_items = dpg.get_item_configuration("mask_list")["items"]
-                    try:
-                        selected_index = current_items.index(current_selection)
-                        if selected_index < len(self.main_window.layer_masks):
-                            self._apply_mask_editing(selected_index)
-                            print(f"Switched to mask editing mode for: {current_selection}")
-                    except ValueError:
-                        pass
+            # Show container controls that don't support enabled property
+            container_controls = ["segmentation_controls", "mask_table"]
+            for control in container_controls:
+                if dpg.does_item_exist(control):
+                    dpg.configure_item(control, show=True)
             
-            # Restore overlay visibility if enabled
+            # When mask section is shown again, restore any previous selection
+            # For now, we'll just ensure overlays are shown if enabled
             if dpg.does_item_exist("show_mask_overlay") and dpg.get_value("show_mask_overlay"):
-                # Get currently selected mask and show it
-                if dpg.does_item_exist("mask_list"):
-                    current_selection = dpg.get_value("mask_list")
-                    if current_selection:
-                        current_items = dpg.get_item_configuration("mask_list")["items"]
-                        try:
-                            selected_index = current_items.index(current_selection)
-                            if selected_index < len(self.main_window.layer_masks):
-                                self.main_window.show_selected_mask(selected_index)
-                                print(f"Restored mask overlay for: {current_selection}")
-                        except ValueError:
-                            pass
-                    elif len(self.main_window.layer_masks) > 0:
-                        # Show first mask if no selection
-                        self.main_window.show_selected_mask(0)
-                        print("Restored first mask overlay")
+                self._update_mask_overlays_visibility()
 
     def _auto_segment(self, sender, app_data, user_data):
         """Trigger automatic segmentation through main window"""
@@ -468,25 +622,6 @@ class ToolPanel:
             self.main_window.segment_current_image()
         else:
             print("Main window reference not available for auto segmentation")
-    
-    def _toggle_box_selection(self, sender, app_data, user_data):
-        """Toggle box selection mode through main window"""
-        # Check if masks are enabled before allowing box selection
-        masks_enabled = True
-        if dpg.does_item_exist("mask_section_toggle"):
-            masks_enabled = dpg.get_value("mask_section_toggle")
-        
-        if not masks_enabled:
-            # If masks are disabled, prevent box selection from being activated
-            if dpg.does_item_exist("box_selection_mode"):
-                dpg.set_value("box_selection_mode", False)
-            print("Cannot enable box selection when masks are disabled")
-            return
-        
-        if self.main_window:
-            self.main_window.toggle_box_selection_mode(sender, app_data)
-        else:
-            print("Main window reference not available for box selection")
     
     def _clear_all_masks(self, sender, app_data, user_data):
         """Clear all masks through main window"""
@@ -569,30 +704,52 @@ class ToolPanel:
         # Save current mask parameters
         if self.current_mask_index >= 0:
             self._save_mask_parameters()
-        
-        # Commit current edits to base image before switching to global editing
+
+        image_processor = None
         if (self.main_window and hasattr(self.main_window, 'crop_rotate_ui') and 
             self.main_window.crop_rotate_ui and 
             hasattr(self.main_window.crop_rotate_ui, 'image_processor')):
-            
-            self.main_window.crop_rotate_ui.image_processor.commit_edits_to_base()
+            image_processor = self.main_window.crop_rotate_ui.image_processor
+
+        # Commit current edits to base image before switching to global editing
+        if image_processor:
+            # Include curves in the commit to preserve them
+            current_params = self._get_current_parameters()
+            curves_data = current_params.get('curves', None)
+            image_processor.commit_edits_to_base(curves_data)
+            print("Committed mask edits to base image before switching to global mode")
 
         # Restore global parameters
         if self.global_params:
             self._apply_parameters(self.global_params)
-        
-        # Disable mask editing in processor
-        if (self.main_window and hasattr(self.main_window, 'crop_rotate_ui') and 
-            self.main_window.crop_rotate_ui and 
-            hasattr(self.main_window.crop_rotate_ui, 'image_processor')):
             
-            self.main_window.crop_rotate_ui.image_processor.set_mask_editing(False, None)
-        
+            # Update image processor parameters with the restored global values
+            if image_processor:
+                params = self.global_params
+                image_processor.exposure = params.get('exposure', 0)
+                image_processor.illumination = params.get('illumination', 0.0)
+                image_processor.contrast = params.get('contrast', 1.0)
+                image_processor.shadow = params.get('shadow', 0)
+                image_processor.whites = params.get('whites', 0)
+                image_processor.blacks = params.get('blacks', 0)
+                image_processor.saturation = params.get('saturation', 1.0)
+                image_processor.texture = params.get('texture', 0)
+                image_processor.grain = params.get('grain', 0)
+                image_processor.temperature = params.get('temperature', 0)
+
+        # Disable mask editing in processor
+        if image_processor:
+            image_processor.set_mask_editing(False, None)
+
         # Update state
         self.mask_editing_enabled = False
         self.current_mask_index = -1
-        
+
         print("Disabled mask editing, returned to global editing")
+        
+        # Force an immediate image update to show the global edits
+        if self.callback:
+            self.callback()
     
     def _apply_mask_editing(self, mask_index):
         """Apply mask editing to the specified mask"""
@@ -602,39 +759,149 @@ class ToolPanel:
         if mask_index >= len(self.main_window.layer_masks):
             return
         
+        image_processor = None
+        if (hasattr(self.main_window, 'crop_rotate_ui') and 
+            self.main_window.crop_rotate_ui and 
+            hasattr(self.main_window.crop_rotate_ui, 'image_processor')):
+            image_processor = self.main_window.crop_rotate_ui.image_processor
+        
+        if not image_processor:
+            print("Error: Could not access image processor")
+            return
+        
         # Store current global parameters if not in mask editing mode
         if not self.mask_editing_enabled:
+            print(f"Switching from global to mask {mask_index} - storing global params")
             self.global_params = self._get_current_parameters()
             # Commit any global edits to the base image before switching to mask editing
-            if (hasattr(self.main_window, 'crop_rotate_ui') and 
-                self.main_window.crop_rotate_ui and 
-                hasattr(self.main_window.crop_rotate_ui, 'image_processor')):
-                
-                self.main_window.crop_rotate_ui.image_processor.commit_edits_to_base()
+            # Include curves in the commit to preserve them
+            curves_data = self.global_params.get('curves', None)
+            image_processor.commit_edits_to_base(curves_data)
         
         # Save current mask parameters and commit edits if switching masks
         if self.current_mask_index >= 0 and self.current_mask_index != mask_index:
+            print(f"Switching from mask {self.current_mask_index} to mask {mask_index} - committing previous edits")
             self._save_mask_parameters()
             # Commit the edits from the previous mask to the base image
-            if (hasattr(self.main_window, 'crop_rotate_ui') and 
-                self.main_window.crop_rotate_ui and 
-                hasattr(self.main_window.crop_rotate_ui, 'image_processor')):
-                
-                self.main_window.crop_rotate_ui.image_processor.commit_edits_to_base()
+            # Include curves in the commit to preserve them
+            current_params = self._get_current_parameters()
+            curves_data = current_params.get('curves', None)
+            image_processor.commit_edits_to_base(curves_data)
+            print(f"Committed edits from mask {self.current_mask_index} to base image")
         
         # Switch to new mask
         self.current_mask_index = mask_index
         self.mask_editing_enabled = True
         
-        # Load mask-specific parameters
+        # Load mask-specific parameters (this will update UI controls)
         self._load_mask_parameters(mask_index)
         
-        # Enable mask editing in processor
-        if (hasattr(self.main_window, 'crop_rotate_ui') and 
-            self.main_window.crop_rotate_ui and 
-            hasattr(self.main_window.crop_rotate_ui, 'image_processor')):
-            
-            selected_mask = self.main_window.layer_masks[mask_index]['segmentation']
-            self.main_window.crop_rotate_ui.image_processor.set_mask_editing(True, selected_mask)
+        # Update image processor parameters with the loaded values
+        params = self._get_current_parameters()
+        image_processor.exposure = params.get('exposure', 0)
+        image_processor.illumination = params.get('illumination', 0.0)
+        image_processor.contrast = params.get('contrast', 1.0)
+        image_processor.shadow = params.get('shadow', 0)
+        image_processor.whites = params.get('whites', 0)
+        image_processor.blacks = params.get('blacks', 0)
+        image_processor.saturation = params.get('saturation', 1.0)
+        image_processor.texture = params.get('texture', 0)
+        image_processor.grain = params.get('grain', 0)
+        image_processor.temperature = params.get('temperature', 0)
         
-        print(f"Enabled mask editing for mask {mask_index}")
+        # Enable mask editing in processor
+        selected_mask = self.main_window.layer_masks[mask_index]['segmentation']
+        image_processor.set_mask_editing(True, selected_mask)
+        
+        print(f"Enabled mask editing for mask {mask_index} with parameters: {params}")
+        
+        # Force an immediate image update to show the new mask with its parameters
+        if self.callback:
+            self.callback()
+    
+    def _toggle_segmentation_mode(self, sender, app_data, user_data):
+        """Toggle unified box selection/segmentation mode"""
+        segmentation_mode_enabled = dpg.get_value("segmentation_mode")
+        
+        if segmentation_mode_enabled:
+            # Try to enable modern real-time segmentation mode first
+            if self.main_window and hasattr(self.main_window, 'enable_segmentation_mode'):
+                success = self.main_window.enable_segmentation_mode()
+                if success:
+                    # Show confirm/cancel buttons for real-time mode
+                    dpg.configure_item("segmentation_controls", show=True)
+                    # Disable conflicting modes
+                    if dpg.does_item_exist("crop_mode"):
+                        dpg.set_value("crop_mode", False)
+                    print("Real-time segmentation mode enabled")
+                else:
+                    # Fallback to legacy box selection mode
+                    if hasattr(self.main_window, 'toggle_box_selection_mode'):
+                        self.main_window.toggle_box_selection_mode("segmentation_mode", True)
+                        print("Fallback to legacy box selection mode")
+                    else:
+                        # Failed to enable any mode, reset checkbox
+                        dpg.set_value("segmentation_mode", False)
+            else:
+                # Fallback to legacy box selection if main window doesn't support new mode
+                if self.main_window and hasattr(self.main_window, 'toggle_box_selection_mode'):
+                    self.main_window.toggle_box_selection_mode("segmentation_mode", True)
+                    print("Using legacy box selection mode")
+                else:
+                    # Failed to enable any mode, reset checkbox
+                    dpg.set_value("segmentation_mode", False)
+        else:
+            # Disable both modes
+            if self.main_window:
+                # Disable real-time segmentation mode
+                if hasattr(self.main_window, 'disable_segmentation_mode'):
+                    self.main_window.disable_segmentation_mode()
+                # Disable legacy box selection mode
+                if hasattr(self.main_window, 'toggle_box_selection_mode'):
+                    self.main_window.toggle_box_selection_mode("segmentation_mode", False)
+            # Hide confirm/cancel buttons
+            dpg.configure_item("segmentation_controls", show=False)
+    
+    def _confirm_segmentation(self, sender, app_data, user_data):
+        """Confirm the current segmentation selection"""
+        # Hide the buttons immediately when confirm is clicked
+        dpg.configure_item("segmentation_controls", show=False)
+        
+        # Also update the checkbox state immediately
+        if dpg.does_item_exist("segmentation_mode"):
+            # Temporarily disable the callback to avoid circular calls
+            original_callback = dpg.get_item_callback("segmentation_mode")
+            dpg.set_item_callback("segmentation_mode", None)
+            
+            # Set the value without triggering callback
+            dpg.set_value("segmentation_mode", False)
+            
+            # Restore the callback
+            dpg.set_item_callback("segmentation_mode", original_callback)
+        
+        # Now proceed with the actual segmentation
+        if self.main_window and hasattr(self.main_window, 'confirm_segmentation_selection'):
+            self.main_window.confirm_segmentation_selection()
+    
+    def _cancel_segmentation(self, sender, app_data, user_data):
+        """Cancel the current segmentation selection"""
+        if self.main_window and hasattr(self.main_window, 'cancel_segmentation_selection'):
+            self.main_window.cancel_segmentation_selection()
+        # Reset UI state
+        self.set_segmentation_mode(False)
+    
+    def set_segmentation_mode(self, enabled):
+        """Set the segmentation mode state from external code"""
+        if dpg.does_item_exist("segmentation_mode"):
+            # Temporarily disable the callback to avoid circular calls
+            original_callback = dpg.get_item_callback("segmentation_mode")
+            dpg.set_item_callback("segmentation_mode", None)
+            
+            # Set the value without triggering callback
+            dpg.set_value("segmentation_mode", enabled)
+            
+            # Restore the callback
+            dpg.set_item_callback("segmentation_mode", original_callback)
+            
+            # Manually update the controls visibility
+            dpg.configure_item("segmentation_controls", show=enabled)

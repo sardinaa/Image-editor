@@ -2,6 +2,7 @@ import dearpygui.dearpygui as dpg
 from ui.tool_panel import ToolPanel
 from ui.crop_rotate import CropRotateUI
 from ui.segmentation import ImageSegmenter  # New import
+from ui.bounding_box_renderer import BoundingBoxRenderer, BoundingBox  # Add BoundingBox import
 import cv2
 import numpy as np
 
@@ -29,6 +30,12 @@ class MainWindow:
         
         # Segmentation instance - created once to avoid GPU memory issues
         self.segmenter = None
+        
+        # Segmentation bounding box renderer
+        self.segmentation_bbox_renderer = None
+        self.segmentation_mode = False
+        self.segmentation_texture = None
+        self.pending_segmentation_box = None
 
     def setup(self):
         viewport_width = dpg.get_viewport_client_width()
@@ -255,8 +262,8 @@ class MainWindow:
             self.update_axis_limits(initial=True)
 
     def on_mouse_wheel(self, sender, app_data):
-        # Custom zoom handling
-        if dpg.does_item_exist("image_plot") and self.crop_rotate_ui:
+        # Custom zoom handling - only when mouse is over the image plot
+        if dpg.does_item_exist("image_plot") and self.crop_rotate_ui and dpg.is_item_hovered("image_plot"):
             # Get current plot limits
             x_limits = dpg.get_axis_limits("x_axis")
             y_limits = dpg.get_axis_limits("y_axis")
@@ -309,6 +316,65 @@ class MainWindow:
         self.crop_rotate_ui = crop_rotate_ui
         self.create_central_panel_content()  # Añadir contenido dinámicamente
         self.crop_rotate_ui.update_image(None, None, None)  # Actualizar la imagen inicial
+        
+        # Initialize segmentation bounding box renderer
+        self._initialize_segmentation_bbox_renderer()
+    
+    def _initialize_segmentation_bbox_renderer(self):
+        """Initialize the segmentation bounding box renderer"""
+        if not self.crop_rotate_ui:
+            return
+            
+        self.segmentation_bbox_renderer = BoundingBoxRenderer(
+            texture_width=self.crop_rotate_ui.texture_w,
+            texture_height=self.crop_rotate_ui.texture_h,
+            panel_id="Central Panel",
+            min_size=20,
+            handle_size=20,
+            handle_threshold=50
+        )
+        
+        # Set different visual style for segmentation mode
+        self.segmentation_bbox_renderer.set_visual_style(
+            box_color=(255, 255, 0, 255),  # Yellow box for segmentation
+            handle_color=(255, 165, 0, 255),  # Orange handles
+            box_thickness=3
+        )
+        
+        # Set up callbacks
+        self.segmentation_bbox_renderer.set_callbacks(
+            on_change=self._on_segmentation_bbox_change,
+            on_start_drag=self._on_segmentation_bbox_start_drag,
+            on_end_drag=self._on_segmentation_bbox_end_drag
+        )
+    
+    def _on_segmentation_bbox_change(self, bbox: BoundingBox) -> None:
+        """Called when segmentation bounding box changes during drag."""
+        if self.segmentation_mode and self.segmentation_texture is not None:
+            self._update_segmentation_overlay()
+    
+    def _on_segmentation_bbox_start_drag(self, bbox: BoundingBox) -> None:
+        """Called when segmentation bounding box drag starts."""
+        pass  # No special handling needed for start
+    
+    def _on_segmentation_bbox_end_drag(self, bbox: BoundingBox) -> None:
+        """Called when segmentation bounding box drag ends."""
+        if self.segmentation_mode and self.segmentation_texture is not None:
+            self.pending_segmentation_box = bbox.to_dict()
+            self._update_segmentation_overlay(force_update=True)
+    
+    def _update_segmentation_overlay(self, force_update=False):
+        """Update the segmentation overlay with the current bounding box"""
+        if not self.segmentation_bbox_renderer or self.segmentation_texture is None:
+            return
+            
+        # Render the bounding box on the texture
+        blended = self.segmentation_bbox_renderer.render_on_texture(self.segmentation_texture)
+        
+        # Update the texture in DearPyGUI
+        if self.crop_rotate_ui and self.crop_rotate_ui.texture_tag:
+            texture_data = blended.flatten().astype(np.float32) / 255.0
+            dpg.set_value(self.crop_rotate_ui.texture_tag, texture_data)
 
     def update_preview(self, image, reset_offset=False):
         if self.crop_rotate_ui:
@@ -367,6 +433,12 @@ class MainWindow:
                 self.tool_panel.curves_panel.on_click(sender, app_data)
                 return True
         
+        # Check if segmentation mode is active
+        if self.segmentation_mode and self.segmentation_bbox_renderer:
+            if dpg.is_item_hovered("image_plot"):
+                if self.segmentation_bbox_renderer.on_mouse_down(sender, app_data):
+                    return True
+        
         # Check if the box selection mode is active
         if not self.box_selection_mode:
             # Forward to crop_rotate_ui if needed
@@ -399,6 +471,11 @@ class MainWindow:
                 self.tool_panel.curves_panel.on_drag(sender, app_data)
                 return True
         
+        # Check if segmentation mode is active
+        if self.segmentation_mode and self.segmentation_bbox_renderer:
+            if self.segmentation_bbox_renderer.on_mouse_drag(sender, app_data):
+                return True
+        
         if not self.box_selection_mode or not self.box_selection_active:
             # Forward to crop_rotate_ui if needed
             if self.crop_rotate_ui:
@@ -422,6 +499,11 @@ class MainWindow:
         if self.tool_panel and self.tool_panel.curves_panel:
             if self.tool_panel.curves_panel.dragging_point is not None:
                 self.tool_panel.curves_panel.on_release(sender, app_data)
+                return True
+        
+        # Check if segmentation mode is active
+        if self.segmentation_mode and self.segmentation_bbox_renderer:
+            if self.segmentation_bbox_renderer.on_mouse_release(sender, app_data):
                 return True
         
         if not self.box_selection_mode or not self.box_selection_active:
@@ -454,7 +536,13 @@ class MainWindow:
         return False
     
     def segment_with_box(self, box):
-        """Segment the current image using a bounding box as input"""
+        """
+        Segment the current image using a bounding box as input.
+        
+        Args:
+            box: Bounding box coordinates [x1, y1, x2, y2] in texture coordinate system
+                 (Y=0 at top, Y increases downward) from BoundingBoxRenderer
+        """
         if self.crop_rotate_ui and hasattr(self.crop_rotate_ui, "original_image"):
             # Get the reusable segmenter instance
             segmenter = self.get_segmenter()
@@ -467,17 +555,31 @@ class MainWindow:
             # Get the original image dimensions
             h, w = image.shape[:2]
             
-            # Scale the box coordinates to match the original image
-            # (convert from plot coords to image coords)
+            # Calculate the texture offsets where the image is centered within the texture
+            texture_w = self.crop_rotate_ui.texture_w
+            texture_h = self.crop_rotate_ui.texture_h
+            offset_x = (texture_w - w) // 2
+            offset_y = (texture_h - h) // 2
+            
+            # The box coordinates are already in texture coordinate system (from BoundingBoxRenderer)
+            # We just need to adjust for the texture offset to get image coordinates
+            # Note: No Y-axis flipping needed since both are in texture/image coordinate system
             scaled_box = [
-                max(0, min(w-1, int(box[0]))),
-                max(0, min(h-1, int(box[1]))),
-                max(0, min(w-1, int(box[2]))),
-                max(0, min(h-1, int(box[3])))
+                max(0, min(w-1, int(box[0] - offset_x))),     # X1: Adjust X for texture offset
+                max(0, min(h-1, int(box[1] - offset_y))),     # Y1: Adjust Y for texture offset
+                max(0, min(w-1, int(box[2] - offset_x))),     # X2: Adjust X for texture offset
+                max(0, min(h-1, int(box[3] - offset_y)))      # Y2: Adjust Y for texture offset
             ]
             
-            print(f"Segmenting with box: {scaled_box}")
+            print(f"Original box (texture coords): {box}")
+            print(f"Texture dimensions: {texture_w}x{texture_h}")
+            print(f"Image dimensions: {w}x{h}")
+            print(f"Image offset in texture: ({offset_x}, {offset_y})")
+            print(f"Segmenting with box (image coords): {scaled_box}")
             try:
+                # Show loading indicator
+                self._show_segmentation_loading("Segmenting selected area...")
+                
                 # Clean up memory before segmentation
                 self.cleanup_segmenter_memory()
                 
@@ -517,16 +619,23 @@ class MainWindow:
                         self.reset_segmenter()
                 except Exception as cleanup_e:
                     print(f"Error during cleanup: {cleanup_e}")
+            finally:
+                # Always hide loading indicator
+                self._hide_segmentation_loading()
         else:
             print("No image available for segmentation.")
     
     def segment_current_image(self):
         # Segment the current image using SAM
         if self.crop_rotate_ui and hasattr(self.crop_rotate_ui, "original_image"):
+            # Show loading indicator
+            self._show_segmentation_loading("Segmenting image...")
+            
             # Get the reusable segmenter instance
             segmenter = self.get_segmenter()
             if segmenter is None:
                 print("Failed to create segmenter instance")
+                self._hide_segmentation_loading()
                 return
                 
             image = self.crop_rotate_ui.original_image
@@ -555,6 +664,9 @@ class MainWindow:
                         self.reset_segmenter()
                 except Exception as cleanup_e:
                     print(f"Error during cleanup: {cleanup_e}")
+            finally:
+                # Always hide loading indicator
+                self._hide_segmentation_loading()
         else:
             print("No image available for segmentation.")
 
@@ -837,3 +949,146 @@ class MainWindow:
                 print("Segmenter instance reset")
             except Exception as e:
                 print(f"Error resetting segmenter: {e}")
+
+    def enable_segmentation_mode(self):
+        """Enable segmentation mode with real-time bounding box"""
+        if not self.crop_rotate_ui or not self.segmentation_bbox_renderer:
+            print("Cannot enable segmentation mode: missing components")
+            return False
+            
+        # Disable crop mode if active
+        if dpg.does_item_exist("crop_mode") and dpg.get_value("crop_mode"):
+            dpg.set_value("crop_mode", False)
+            if self.tool_panel:
+                self.tool_panel.toggle_crop_mode(None, None, None)
+        
+        self.segmentation_mode = True
+        
+        # Store the current texture for overlay
+        if hasattr(self.crop_rotate_ui, 'rotated_texture') and self.crop_rotate_ui.rotated_texture is not None:
+            self.segmentation_texture = self.crop_rotate_ui.rotated_texture.copy()
+        else:
+            # Fallback: create texture from current image
+            self._create_segmentation_texture()
+        
+        # Set bounds for the bounding box (limit to image area)
+        if self.crop_rotate_ui.original_image is not None:
+            h, w = self.crop_rotate_ui.original_image.shape[:2]
+            offset_x = (self.crop_rotate_ui.texture_w - w) // 2
+            offset_y = (self.crop_rotate_ui.texture_h - h) // 2
+            
+            bounds = BoundingBox(
+                x=offset_x,
+                y=offset_y,
+                width=w,
+                height=h
+            )
+            self.segmentation_bbox_renderer.set_bounds(bounds)
+        
+        print("Segmentation mode enabled - click and drag to select area")
+        return True
+    
+    def disable_segmentation_mode(self):
+        """Disable segmentation mode"""
+        self.segmentation_mode = False
+        self.segmentation_texture = None
+        self.pending_segmentation_box = None
+        
+        if self.segmentation_bbox_renderer:
+            self.segmentation_bbox_renderer.reset()
+        
+        # Refresh the display without segmentation overlay
+        if self.crop_rotate_ui:
+            self.crop_rotate_ui.update_image(None, None, None)
+        
+        print("Segmentation mode disabled")
+    
+    def _create_segmentation_texture(self):
+        """Create segmentation texture from current image"""
+        if not self.crop_rotate_ui or self.crop_rotate_ui.original_image is None:
+            return
+            
+        image = self.crop_rotate_ui.original_image
+        h, w = image.shape[:2]
+        
+        # Create texture with gray background
+        texture = np.full((self.crop_rotate_ui.texture_h, self.crop_rotate_ui.texture_w, 4), 
+                         [100, 100, 100, 0], dtype=np.uint8)
+        
+        # Center the image in the texture
+        offset_x = (self.crop_rotate_ui.texture_w - w) // 2
+        offset_y = (self.crop_rotate_ui.texture_h - h) // 2
+        
+        # Convert image to RGBA if needed
+        if image.shape[2] == 3:
+            image_rgba = cv2.cvtColor(image, cv2.COLOR_RGB2RGBA)
+        else:
+            image_rgba = image
+        
+        # Place image in texture
+        texture[offset_y:offset_y + h, offset_x:offset_x + w] = image_rgba
+        
+        self.segmentation_texture = texture
+    
+    def confirm_segmentation_selection(self):
+        """Confirm the current segmentation selection and perform segmentation"""
+        if not self.pending_segmentation_box or not self.segmentation_mode:
+            print("No segmentation area selected")
+            return
+            
+        # Convert bounding box to the format expected by segment_with_box
+        bbox = self.pending_segmentation_box
+        # Box format: [x1, y1, x2, y2]
+        box = [bbox["x"], bbox["y"], bbox["x"] + bbox["w"], bbox["y"] + bbox["h"]]
+        
+        print(f"Confirming segmentation with box: {box}")
+        
+        # Disable segmentation mode
+        self.disable_segmentation_mode()
+        
+        # Show loading indicator before performing segmentation
+        self._show_segmentation_loading("Processing selection...")
+        
+        try:
+            # Perform segmentation
+            self.segment_with_box(box)
+        finally:
+            # Hide loading indicator (segment_with_box has its own loading management, 
+            # but this ensures it's hidden if there are any early returns)
+            self._hide_segmentation_loading()
+        
+        # Update tool panel to reflect the change
+        if self.tool_panel:
+            self.tool_panel.set_segmentation_mode(False)
+    
+    def cancel_segmentation_selection(self):
+        """Cancel the current segmentation selection"""
+        print("Segmentation selection cancelled")
+        self.disable_segmentation_mode()
+        
+        # Update tool panel to reflect the change
+        if self.tool_panel:
+            self.tool_panel.set_segmentation_mode(False)
+    
+    def _show_segmentation_loading(self, message="Processing..."):
+        """Show loading indicator for segmentation process"""
+        print(f"Attempting to show loading indicator with message: {message}")
+        if dpg.does_item_exist("segmentation_loading_group"):
+            print("Loading group exists, showing indicator")
+            # Update the message and show the indicator
+            if dpg.does_item_exist("segmentation_loading_text"):
+                dpg.set_value("segmentation_loading_text", message)
+                print(f"Updated loading text to: {message}")
+            dpg.configure_item("segmentation_loading_group", show=True)
+            print("Loading indicator should now be visible")
+        else:
+            print("Loading group does not exist!")
+    
+    def _hide_segmentation_loading(self):
+        """Hide loading indicator for segmentation process"""
+        print("Attempting to hide loading indicator")
+        if dpg.does_item_exist("segmentation_loading_group"):
+            dpg.configure_item("segmentation_loading_group", show=False)
+            print("Loading indicator hidden")
+        else:
+            print("Loading group does not exist for hiding!")

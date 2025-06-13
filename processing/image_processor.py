@@ -34,14 +34,34 @@ class ImageProcessor:
         self.current = self.original.copy()
         self.base_image = self.original.copy()
         
-    def commit_edits_to_base(self):
+    def commit_edits_to_base(self, curves_data=None):
         """
         Commits current edits to the base image. This should be called
         when switching between masks or from mask editing to global editing
         to preserve the cumulative changes.
+        
+        Args:
+            curves_data: Optional curves data to apply before committing
         """
-        self.base_image = self.current.copy()
-        print(f"DEBUG: Committed current edits to base image")
+        # Start with the current processed image
+        final_image = self.current.copy()
+        
+        # Apply curves if provided (this ensures curves are included in the commit)
+        if curves_data:
+            if isinstance(curves_data, dict) and 'curves' in curves_data:
+                # New format with interpolation mode
+                curves = curves_data['curves']
+                interpolation_mode = curves_data.get('interpolation_mode', 'Linear')
+            else:
+                # Old format (backward compatibility)
+                curves = curves_data
+                interpolation_mode = 'Linear'
+            
+            final_image = self.apply_rgb_curves(final_image, curves, interpolation_mode)
+        
+        # Commit the final image (including curves) to base
+        self.base_image = final_image.copy()
+        print(f"Committed current edits (including curves) to base image")
     
     def set_mask_editing(self, enabled, mask=None):
         """
@@ -99,7 +119,6 @@ class ImageProcessor:
         if self.mask_editing_enabled and self.current_mask is not None:
             # Apply edits only to masked areas
             mask = self.current_mask
-            print(f"DEBUG: Applying mask editing - mask shape: {mask.shape}, mask range: {mask.min()}-{mask.max()}")
             
             # Create a copy of the masked area for editing
             masked_img = img.copy()
@@ -132,10 +151,8 @@ class ImageProcessor:
                 mask_3d = np.stack([mask, mask, mask], axis=2)
                 
             img = np.where(mask_3d, masked_img, img)
-            print(f"DEBUG: Applied mask editing successfully")
         else:
             # Apply edits to the entire image as before
-            print(f"DEBUG: Applying global editing - mask_editing_enabled: {self.mask_editing_enabled}, has_mask: {self.current_mask is not None}")
             img = self.apply_exposure(img, self.exposure)
             img = self.apply_illumination(img, self.illumination)
             img = self.apply_contrast(img, self.contrast)
