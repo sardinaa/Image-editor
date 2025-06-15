@@ -20,6 +20,9 @@ class CropRotateUI:
         self.texture_w = int(np.ceil(diagonal))
         self.texture_h = self.texture_w
         self.texture_tag = "crop_rotate_texture"
+        self.x_axis_tag = "x_axis"
+        self.y_axis_tag = "y_axis"
+        self.panel_id = "central_panel"  # Use production version's panel tag
         self.rotation_slider = "rotation_slider"
 
         # Initialize the slider if it doesn't exist
@@ -30,7 +33,7 @@ class CropRotateUI:
         self.bbox_renderer = BoundingBoxRenderer(
             texture_width=self.texture_w,
             texture_height=self.texture_h,
-            panel_id="Central Panel",
+            panel_id=self.panel_id,
             min_size=20,
             handle_size=20,
             handle_threshold=50
@@ -87,9 +90,14 @@ class CropRotateUI:
                 self.user_rect = max_bbox.to_dict()
 
     def update_image(self, sender, app_data, user_data):
-        panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
-        if panel_w <= 0 or panel_h <= 0:
-            panel_w, panel_h = dpg.get_item_width("Central Panel"), dpg.get_item_height("Central Panel")
+        # Try to get panel dimensions, use fallback if not available
+        try:
+            panel_w, panel_h = dpg.get_item_rect_size(self.panel_id)
+            if panel_w <= 0 or panel_h <= 0:
+                panel_w, panel_h = dpg.get_item_width(self.panel_id), dpg.get_item_height(self.panel_id)
+        except:
+            # Fallback dimensions if panel not found
+            panel_w, panel_h = 800, 600
 
         # Obtener ángulo y estado de crop_mode
         angle = dpg.get_value(self.rotation_slider)
@@ -179,14 +187,29 @@ class CropRotateUI:
                     gray_background[offset_y:offset_y + cropped_image.shape[0], 
                                    offset_x:offset_x + cropped_image.shape[1]] = cropped_image_rgba
                     
-                    # Update texture
+                    # Update texture using existing main texture
                     texture_data = gray_background.flatten().astype(np.float32) / 255.0
                     if dpg.does_item_exist(self.texture_tag):
                         dpg.set_value(self.texture_tag, texture_data)
+                        print(f"✓ Updated existing texture {self.texture_tag}")
                     else:
+                        # Only create if it doesn't exist - use raw texture like original
                         with dpg.texture_registry():
-                            dpg.add_dynamic_texture(self.texture_w, self.texture_h, texture_data, 
-                                                  tag=self.texture_tag, format=dpg.mvFormat_Float_rgba)
+                            dpg.add_raw_texture(self.texture_w, self.texture_h, texture_data, 
+                                               tag=self.texture_tag, format=dpg.mvFormat_Float_rgba)
+                        print(f"✓ Created new raw texture {self.texture_tag}")
+                        
+                        # Create image series only if it doesn't exist
+                        if not dpg.does_item_exist("main_image_series"):
+                            if dpg.does_item_exist(self.y_axis_tag):
+                                dpg.add_image_series(
+                                    self.texture_tag,
+                                    bounds_min=[0, 0],
+                                    bounds_max=[self.texture_w, self.texture_h],
+                                    parent=self.y_axis_tag,
+                                    tag="main_image_series"
+                                )
+                                print("✓ Created image series for crop mode")
             else:
                 # Just display the original image with processing parameters but no crop
                 display_image = self.original_image.copy()  # self.original_image already has all processing applied
@@ -215,14 +238,29 @@ class CropRotateUI:
                 gray_background[offset_y:offset_y + display_image.shape[0], 
                                offset_x:offset_x + display_image.shape[1]] = display_image_rgba
                 
-                # Update texture
+                # Update texture using existing main texture
                 texture_data = gray_background.flatten().astype(np.float32) / 255.0
                 if dpg.does_item_exist(self.texture_tag):
                     dpg.set_value(self.texture_tag, texture_data)
+                    print(f"✓ Updated texture {self.texture_tag} in non-crop mode")
                 else:
+                    # Only create if it doesn't exist - use raw texture like original
                     with dpg.texture_registry():
-                        dpg.add_dynamic_texture(self.texture_w, self.texture_h, texture_data, 
-                                              tag=self.texture_tag, format=dpg.mvFormat_Float_rgba)
+                        dpg.add_raw_texture(self.texture_w, self.texture_h, texture_data, 
+                                           tag=self.texture_tag, format=dpg.mvFormat_Float_rgba)
+                    print(f"✓ Created new raw texture {self.texture_tag} in non-crop mode")
+                    
+                    # Create image series only if it doesn't exist
+                    if not dpg.does_item_exist("main_image_series"):
+                        if dpg.does_item_exist(self.y_axis_tag):
+                            dpg.add_image_series(
+                                self.texture_tag,
+                                bounds_min=[0, 0],
+                                bounds_max=[self.texture_w, self.texture_h],
+                                parent=self.y_axis_tag,
+                                tag="main_image_series"
+                            )
+                            print("✓ Created image series for non-crop mode")
         
         # Update axis limits to maintain proper aspect ratio
         self.update_axis_limits()
@@ -236,10 +274,13 @@ class CropRotateUI:
         image_offset_x = (self.texture_w - orig_w) // 2
         image_offset_y = (self.texture_h - orig_h) // 2
         
-        # Get current plot dimensions
-        panel_w, panel_h = dpg.get_item_rect_size("Central Panel")
-        if panel_w <= 0 or panel_h <= 0:
-            panel_w, panel_h = dpg.get_item_width("Central Panel"), dpg.get_item_height("Central Panel")
+        # Get current plot dimensions with fallback
+        try:
+            panel_w, panel_h = dpg.get_item_rect_size(self.panel_id)
+            if panel_w <= 0 or panel_h <= 0:
+                panel_w, panel_h = dpg.get_item_width(self.panel_id), dpg.get_item_height(self.panel_id)
+        except:
+            panel_w, panel_h = 800, 600  # Fallback
         
         if panel_w <= 0 or panel_h <= 0:
             panel_w, panel_h = 800, 600  # Fallback
@@ -280,8 +321,8 @@ class CropRotateUI:
         # Don't modify the image series bounds - keep them as the full texture
         # The axis limits will control what portion of the texture is visible
         
-        dpg.set_axis_limits("x_axis", x_min, x_max)
-        dpg.set_axis_limits("y_axis", y_min, y_max)
+        dpg.set_axis_limits(self.x_axis_tag, x_min, x_max)
+        dpg.set_axis_limits(self.y_axis_tag, y_min, y_max)
 
     def update_rectangle_overlay(self, force_update=False):
         current_time = time.time()
@@ -364,4 +405,23 @@ class CropRotateUI:
             dpg.set_value("cropped_texture", cropped_flat)
         else:
             with dpg.texture_registry():
-                dpg.add_dynamic_texture(width, height, cropped_flat, tag="cropped_texture")
+                dpg.add_raw_texture(width, height, cropped_flat, tag="cropped_texture", format=dpg.mvFormat_Float_rgba)
+
+    def cleanup(self):
+        """Cleanup CropRotateUI resources."""
+        try:
+            # Clean up textures
+            if hasattr(self, 'texture_tag') and dpg.does_item_exist(self.texture_tag):
+                dpg.delete_item(self.texture_tag)
+            
+            # Clean up other UI elements if they exist
+            if dpg.does_item_exist("main_image_series"):
+                dpg.delete_item("main_image_series")
+            
+            if dpg.does_item_exist("cropped_texture"):
+                dpg.delete_item("cropped_texture")
+            
+            print("✓ CropRotateUI cleanup completed")
+            
+        except Exception as e:
+            print(f"Error during CropRotateUI cleanup: {e}")

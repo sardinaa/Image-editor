@@ -334,11 +334,11 @@ class MainWindow:
             handle_threshold=50
         )
         
-        # Set different visual style for segmentation mode
+        # Set visual style to match crop mode for consistency
         self.segmentation_bbox_renderer.set_visual_style(
-            box_color=(255, 255, 0, 255),  # Yellow box for segmentation
-            handle_color=(255, 165, 0, 255),  # Orange handles
-            box_thickness=3
+            box_color=(64, 64, 64, 255),  # Dark gray box (same as crop mode)
+            handle_color=(13, 115, 184, 255),  # Blue handles (same as crop mode)
+            box_thickness=2  # Same thickness as crop mode
         )
         
         # Set up callbacks
