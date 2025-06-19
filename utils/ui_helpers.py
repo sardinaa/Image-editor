@@ -117,9 +117,13 @@ class MaskOverlayManager:
     @staticmethod
     def hide_all_overlays(mask_count: int, max_masks: int = 100) -> None:
         """Hide all mask overlays."""
+        hidden_count = 0
         for idx in range(max_masks):
             series_tag = f"mask_series_{idx}"
-            UIStateManager.safe_configure_item(series_tag, show=False)
+            if UIStateManager.safe_configure_item(series_tag, show=False):
+                hidden_count += 1
+        if hidden_count > 0:
+            print(f"Hidden {hidden_count} mask overlays")
     
     @staticmethod
     def show_overlay(mask_index: int) -> bool:
@@ -168,9 +172,9 @@ def setup_ui_theme():
                 dpg.add_theme_color(dpg.mvThemeCol_Button, [70, 70, 70, 255])
                 dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, [80, 80, 80, 255])
                 dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, [90, 90, 90, 255])
-                dpg.add_theme_color(dpg.mvThemeCol_Header, [60, 60, 60, 255])
-                dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered, [70, 70, 70, 255])
-                dpg.add_theme_color(dpg.mvThemeCol_HeaderActive, [80, 80, 80, 255])
+                dpg.add_theme_color(dpg.mvThemeCol_Header, [50, 100, 150, 255])
+                dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered, [70, 120, 170, 255])
+                dpg.add_theme_color(dpg.mvThemeCol_HeaderActive, [90, 140, 190, 255])
                 dpg.add_theme_color(dpg.mvThemeCol_Text, [255, 255, 255, 255])
                 dpg.add_theme_color(dpg.mvThemeCol_TextDisabled, [128, 128, 128, 255])
                 

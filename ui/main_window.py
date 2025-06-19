@@ -781,11 +781,22 @@ class MainWindow:
                 except Exception as e:
                     print(f"Error hiding overlay {idx}: {e}")
         
-        # Show first mask if any were created successfully
+        # Show first mask if any were created successfully and masks should be visible
         if successful_masks > 0:
             try:
-                self.show_selected_mask(0)
-                print(f"Successfully processed {successful_masks} mask overlays")
+                # Only show masks if:
+                # 1. Masks are enabled
+                # 2. Crop mode is not active
+                # 3. Show mask overlay is enabled
+                masks_enabled = dpg.does_item_exist("mask_section_toggle") and dpg.get_value("mask_section_toggle")
+                crop_mode_active = dpg.does_item_exist("crop_mode") and dpg.get_value("crop_mode")
+                show_overlay = dpg.does_item_exist("show_mask_overlay") and dpg.get_value("show_mask_overlay")
+                
+                if masks_enabled and not crop_mode_active and show_overlay:
+                    self.show_selected_mask(0)
+                    print(f"Successfully processed {successful_masks} mask overlays and showing first mask")
+                else:
+                    print(f"Successfully processed {successful_masks} mask overlays but not showing (masks_enabled={masks_enabled}, crop_mode_active={crop_mode_active}, show_overlay={show_overlay})")
             except Exception as e:
                 print(f"Error showing selected mask: {e}")
         else:

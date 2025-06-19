@@ -40,8 +40,8 @@ class ColorEffectsPanel(BasePanel):
             label="Texture",
             tag="texture",
             default=0,
-            min_val=0,
-            max_val=10
+            min_val=-100,
+            max_val=100
         )
         
         self._create_slider_int(
@@ -49,15 +49,15 @@ class ColorEffectsPanel(BasePanel):
             tag="grain",
             default=0,
             min_val=0,
-            max_val=50
+            max_val=100
         )
         
         self._create_slider_int(
             label="Temperature",
             tag="temperature",
             default=0,
-            min_val=-50,
-            max_val=50
+            min_val=-100,
+            max_val=100
         )
     
     def get_parameters(self) -> Dict[str, Any]:

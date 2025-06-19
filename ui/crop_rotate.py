@@ -191,13 +191,11 @@ class CropRotateUI:
                     texture_data = gray_background.flatten().astype(np.float32) / 255.0
                     if dpg.does_item_exist(self.texture_tag):
                         dpg.set_value(self.texture_tag, texture_data)
-                        print(f"✓ Updated existing texture {self.texture_tag}")
                     else:
                         # Only create if it doesn't exist - use raw texture like original
                         with dpg.texture_registry():
                             dpg.add_raw_texture(self.texture_w, self.texture_h, texture_data, 
                                                tag=self.texture_tag, format=dpg.mvFormat_Float_rgba)
-                        print(f"✓ Created new raw texture {self.texture_tag}")
                         
                         # Create image series only if it doesn't exist
                         if not dpg.does_item_exist("main_image_series"):
@@ -213,7 +211,6 @@ class CropRotateUI:
             else:
                 # Just display the original image with processing parameters but no crop
                 display_image = self.original_image.copy()  # self.original_image already has all processing applied
-                print(f"Updating image in non-crop mode, dimensions: {display_image.shape}")
                 
                 # Create background and center the image
                 gray_background = np.full((self.texture_h, self.texture_w, 4), 
@@ -242,13 +239,11 @@ class CropRotateUI:
                 texture_data = gray_background.flatten().astype(np.float32) / 255.0
                 if dpg.does_item_exist(self.texture_tag):
                     dpg.set_value(self.texture_tag, texture_data)
-                    print(f"✓ Updated texture {self.texture_tag} in non-crop mode")
                 else:
                     # Only create if it doesn't exist - use raw texture like original
                     with dpg.texture_registry():
                         dpg.add_raw_texture(self.texture_w, self.texture_h, texture_data, 
                                            tag=self.texture_tag, format=dpg.mvFormat_Float_rgba)
-                    print(f"✓ Created new raw texture {self.texture_tag} in non-crop mode")
                     
                     # Create image series only if it doesn't exist
                     if not dpg.does_item_exist("main_image_series"):
@@ -260,7 +255,6 @@ class CropRotateUI:
                                 parent=self.y_axis_tag,
                                 tag="main_image_series"
                             )
-                            print("✓ Created image series for non-crop mode")
         
         # Update axis limits to maintain proper aspect ratio
         self.update_axis_limits()

@@ -244,15 +244,19 @@ class BoundingBoxRenderer:
         mouse_pos = dpg.get_mouse_pos()
         texture_x, texture_y = self.screen_to_texture_coords(mouse_pos[0], mouse_pos[1])
         
+        print(f"BoundingBoxRenderer: Mouse down at {texture_x}, {texture_y}")
+        
         # If no bounding box exists, start creating a new one
         if not self.bounding_box:
             # Create a new bounding box starting from this point
-            self.bounding_box = BoundingBox(texture_x, texture_y, 0, 0)
+            self.bounding_box = BoundingBox(texture_x, texture_y, 10, 10)  # Start with a small default size
             self.is_dragging = True
             self.drag_mode = DragMode.RESIZE
             self.drag_handle = HandleType.BOTTOM_RIGHT  # Growing from top-left
             self.drag_start_mouse = (texture_x, texture_y)
             self.drag_start_box = self.bounding_box.copy()
+            
+            print(f"Created new bounding box at {texture_x}, {texture_y}")
             
             if self.on_start_drag_callback:
                 self.on_start_drag_callback(self.bounding_box.copy())
@@ -300,12 +304,14 @@ class BoundingBoxRenderer:
     def on_mouse_drag(self, sender, app_data) -> bool:
         """Handle mouse drag events. Returns True if event was handled."""
         if not self.is_dragging or not self.bounding_box or not self.drag_start_box:
+            # print(f"Drag ignored - is_dragging: {self.is_dragging}, box: {self.bounding_box is not None}, start_box: {self.drag_start_box is not None}")
             return False
         
         # Additional safety check: ensure left mouse button is still pressed
         # This prevents accidental modifications if mouse events arrive after release
         if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
             # Force end the drag if mouse button is not pressed
+            print("Mouse button released during drag - ending drag")
             self.is_dragging = False
             self.drag_mode = DragMode.NONE
             self.drag_handle = None
@@ -350,10 +356,27 @@ class BoundingBoxRenderer:
         self.drag_handle = None
         self.drag_start_box = None
         
-        if was_dragging:
-            # Call end drag callback only - no need for change callback here
-            # as it would trigger after drag_active is already set to False
-            if self.on_end_drag_callback:
+        if was_dragging and self.bounding_box:
+            # Ensure the bounding box has valid dimensions
+            # Normalize negative width/height
+            if self.bounding_box.width < 0:
+                self.bounding_box.x += self.bounding_box.width
+                self.bounding_box.width = abs(self.bounding_box.width)
+            
+            if self.bounding_box.height < 0:
+                self.bounding_box.y += self.bounding_box.height
+                self.bounding_box.height = abs(self.bounding_box.height)
+            
+            # Enforce minimum dimensions
+            if self.bounding_box.width < 5:
+                self.bounding_box.width = 5
+            
+            if self.bounding_box.height < 5:
+                self.bounding_box.height = 5
+            
+            # Call end drag callback only if dimensions are meaningful
+            if self.on_end_drag_callback and self.bounding_box.width > 0 and self.bounding_box.height > 0:
+                print(f"BoundingBoxRenderer: End drag with box {self.bounding_box.x},{self.bounding_box.y},{self.bounding_box.width}x{self.bounding_box.height}")
                 self.on_end_drag_callback(self.bounding_box.copy())
         
         return was_dragging

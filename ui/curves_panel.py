@@ -127,6 +127,11 @@ class CurvesPanel:
             # Bind the handlers to the plot
             dpg.bind_item_handler_registry(self.plot_tag, plot_handlers)
             
+            # Add global mouse handlers for better drag support
+            with dpg.handler_registry():
+                dpg.add_mouse_drag_handler(callback=self.on_global_drag, button=dpg.mvMouseButton_Left)
+                dpg.add_mouse_release_handler(callback=self.on_global_release, button=dpg.mvMouseButton_Left)
+            
             # Add controls - more compact
             with dpg.group(horizontal=True):
                 dpg.add_button(label="Reset", callback=self.reset_curve, width=55, height=18)
@@ -355,7 +360,7 @@ class CurvesPanel:
         channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
         
         # Check if we're clicking near an existing point
-        hit_radius = 30
+        hit_radius = 40
         for idx, point in enumerate(self.curves[check_key]):
             distance = abs(point[0] - x) + abs(point[1] - y)
             if distance < hit_radius:
@@ -442,7 +447,7 @@ class CurvesPanel:
         channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
         
         # Check if we're clicking near an existing point
-        hit_radius = 30
+        hit_radius = 40
         for idx, point in enumerate(self.curves[check_key]):
             distance = abs(point[0] - x) + abs(point[1] - y)
             if distance < hit_radius:
@@ -461,18 +466,31 @@ class CurvesPanel:
         self.callback(sender, app_data, None)
     
     def on_global_drag(self, sender, app_data):
-        """Handle dragging when a point is selected"""
+        """Global drag handler for better drag support"""
+        # Only handle drag if we have a point being dragged and mouse button is still pressed
+        if (self.dragging_point is not None and 
+            self.is_mouse_over_plot() and 
+            dpg.is_mouse_button_down(dpg.mvMouseButton_Left)):
+            x, y = self.get_mouse_plot_coordinates()
+            if x >= 0 and y >= 0:  # Valid coordinates
+                self.update_dragging_point(x, y)
+    
+    def on_global_release(self, sender, app_data):
+        """Handle mouse release to stop dragging"""
+        if self.dragging_point is not None:
+            self.dragging_point = None
+    
+    def update_dragging_point(self, x, y):
+        """Update the position of the currently dragging point"""
         if self.dragging_point is None:
             return
-            
-        # Only process if mouse is over plot
-        if not self.is_mouse_over_plot():
-            return
-            
-        # Get mouse position in plot coordinates
-        x, y = self.get_mouse_plot_coordinates()
         
-        # Clamp values
+        # Safety check: if mouse button is not pressed, stop dragging
+        if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
+            self.dragging_point = None
+            return
+        
+        # Clamp values to valid range
         x = max(0, min(255, x))
         y = max(0, min(255, y))
         
@@ -480,24 +498,33 @@ class CurvesPanel:
         idx, channels = self.dragging_point
         for ch in channels:
             if 0 <= idx < len(self.curves[ch]):
-                # Special cases for endpoints
+                # Special cases for endpoints - lock X coordinate
                 if idx == 0:  # First point
                     x = 0  # Keep at 0
                 elif idx == len(self.curves[ch]) - 1:  # Last point
                     x = 255  # Keep at 255
-                old_point = self.curves[ch][idx]
+                
+                # Update the point
                 self.curves[ch][idx] = (x, y)
+                
+                # Sort points by X coordinate to maintain proper curve order
+                # but keep track of our current point for non-endpoints
+                if idx != 0 and idx != len(self.curves[ch]) - 1:
+                    point_value = (x, y)
+                    self.curves[ch] = sorted(self.curves[ch], key=lambda p: p[0])
+                    # Update the dragging index to match the new position
+                    try:
+                        new_idx = self.curves[ch].index(point_value)
+                        self.dragging_point = (new_idx, channels)
+                        self.selected_point = (new_idx, channels)
+                    except ValueError:
+                        pass  # Point not found, keep current index
         
         # Update the plot
         self.update_plot()
         
         # Notify of changes
-        self.callback(sender, app_data, None)
-    
-    def on_global_release(self, sender, app_data):
-        """Handle mouse release to stop dragging"""
-        if self.dragging_point is not None:
-            self.dragging_point = None
+        self.callback(None, None, None)
     
     def on_plot_hover(self, sender, app_data):
         """Handle hover over the plot"""
@@ -527,7 +554,7 @@ class CurvesPanel:
             channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
             
             # Increase hit-test radius - make it easier to select points
-            hit_radius = 30
+            hit_radius = 40
             
             # Check if clicked near an existing point
             for idx, point in enumerate(self.curves[check_key]):
@@ -569,7 +596,7 @@ class CurvesPanel:
         channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
         
         # Increase hit-test radius - make it easier to select points
-        hit_radius = 30  # Increased from 25
+        hit_radius = 40  # Increased from 25, then from 30
         
         # Check if clicked near an existing point - use check_key instead of channel_key
         for idx, point in enumerate(self.curves[check_key]):
@@ -769,7 +796,7 @@ class CurvesPanel:
         channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
         
         # Check if we're clicking near an existing point
-        hit_radius = 30
+        hit_radius = 40
         point_found = False
         
         for idx, point in enumerate(self.curves[check_key]):
@@ -965,8 +992,8 @@ class CurvesPanel:
         check_key = "r" if channel_key == "rgb" else channel_key
         channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
         
-        # Check if clicking near an existing point
-        hit_radius = 30
+        # Check if clicking near an existing point - increased hit radius for easier selection
+        hit_radius = 40  # Increased from 30 for better user experience
         for idx, point in enumerate(self.curves[check_key]):
             distance = abs(point[0] - x) + abs(point[1] - y)
             if distance < hit_radius:

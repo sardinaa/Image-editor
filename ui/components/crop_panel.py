@@ -83,6 +83,22 @@ class CropPanel(BasePanel):
         # Show/hide crop panel
         UIStateManager.safe_configure_item("crop_panel", show=current)
         
+        # Handle mask overlay visibility when crop mode changes
+        if self.main_window and hasattr(self.main_window, 'layer_masks') and self.main_window.layer_masks:
+            try:
+                if current:
+                    # Crop mode enabled - hide all mask overlays
+                    from utils.ui_helpers import MaskOverlayManager
+                    MaskOverlayManager.hide_all_overlays(len(self.main_window.layer_masks))
+                    print("Hidden all mask overlays (crop mode enabled)")
+                else:
+                    # Crop mode disabled - update overlays to apply rotation
+                    # The masks panel will control visibility based on mask state
+                    self.main_window.update_mask_overlays(self.main_window.layer_masks)
+                    print("Updated mask overlays (crop mode disabled, rotation applied)")
+            except Exception as e:
+                print(f"Error handling mask overlays during crop mode toggle: {e}")
+        
         # Apply crop when checkbox is unchecked
         if not current:
             self._crop_image(sender, app_data, user_data)
@@ -96,6 +112,11 @@ class CropPanel(BasePanel):
             crop_rotate_ui = self.crop_and_rotate_ref()
             if crop_rotate_ui:
                 crop_rotate_ui.update_image(None, None, None)
+        
+        # Note: Mask overlays are NOT updated here during rotation to avoid inefficiency.
+        # Masks are only visible when both mask mode is active AND crop mode is disabled.
+        # Mask rotation is applied only once when crop mode is turned off in toggle_crop_mode.
+        
         self._param_changed(sender, app_data, user_data)
     
     def _set_max_rect(self, sender, app_data, user_data):

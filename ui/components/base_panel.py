@@ -89,6 +89,8 @@ class BasePanel:
             height=height,
             callback=self._param_changed
         )
+        # Add double-click handler to reset to default value
+        self._add_double_click_reset_handler(tag, default)
     
     def _create_slider_float(self, label: str, tag: str, default: float,
                            min_val: float, max_val: float, height: int = 18) -> None:
@@ -102,6 +104,8 @@ class BasePanel:
             height=height,
             callback=self._param_changed
         )
+        # Add double-click handler to reset to default value
+        self._add_double_click_reset_handler(tag, default)
     
     def _create_checkbox(self, label: str, tag: str, default: bool = False) -> None:
         """Create a standardized checkbox."""
@@ -113,14 +117,27 @@ class BasePanel:
         )
     
     def _create_button(self, label: str, callback: Callable, 
-                      width: int = -1, height: int = 20) -> None:
+                      width: int = -1, height: int = 20, tag: str = None) -> None:
         """Create a standardized button."""
-        dpg.add_button(
-            label=label,
-            callback=callback,
-            width=width,
-            height=height
-        )
+        button_kwargs = {
+            'label': label,
+            'callback': callback,
+            'width': width,
+            'height': height
+        }
+        
+        # Only add tag if it's not None
+        if tag is not None:
+            button_kwargs['tag'] = tag
+            
+        dpg.add_button(**button_kwargs)
+    
+    def _add_double_click_reset_handler(self, tag: str, default_value) -> None:
+        """Add a double-click handler to reset a slider to its default value."""
+        # Store the slider info for global double-click handling
+        if not hasattr(self, '_slider_defaults'):
+            self._slider_defaults = {}
+        self._slider_defaults[tag] = default_value
     
     def enable_callbacks(self) -> None:
         """Enable parameter change callbacks."""
@@ -136,6 +153,14 @@ class BasePanel:
             if UIStateManager.safe_item_exists(tag):
                 UIStateManager.safe_configure_item(tag, callback=self._param_changed)
         self._deferred_callbacks.clear()
+    
+    def get_slider_defaults(self) -> Dict[str, Any]:
+        """Get all slider default values for double-click reset."""
+        return getattr(self, '_slider_defaults', {})
+    
+    def get_default_parameters(self) -> Dict[str, Any]:
+        """Get the default parameter values for this panel."""
+        return self.parameters.copy() if self.parameters else {}
 
 
 class PanelManager:
@@ -170,6 +195,15 @@ class PanelManager:
             params = panel.get_parameters()
             all_params.update(params)
         return all_params
+    
+    def get_all_default_parameters(self) -> Dict[str, Any]:
+        """Get default parameters from all panels."""
+        all_defaults = {}
+        for panel in self.panels.values():
+            if hasattr(panel, 'get_default_parameters'):
+                defaults = panel.get_default_parameters()
+                all_defaults.update(defaults)
+        return all_defaults
     
     def set_all_parameters(self, params: Dict[str, Any]) -> None:
         """Set parameters for all panels."""

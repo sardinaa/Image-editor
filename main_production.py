@@ -64,6 +64,9 @@ class ProductionImageEditor:
             vsync=True
         )
         
+        # Set viewport resize callback
+        dpg.set_viewport_resize_callback(self._on_viewport_resize)
+        
         dpg.setup_dearpygui()
         dpg.set_primary_window("main_window", True)
         
@@ -198,6 +201,11 @@ class ProductionImageEditor:
     def show_save_dialog(self):
         """Show the save file dialog."""
         dpg.show_item("file_save_dialog")
+    
+    def _on_viewport_resize(self):
+        """Handle viewport resize events."""
+        if self.main_window:
+            self.main_window.handle_resize()
     
     def run(self):
         """Run the image editor."""

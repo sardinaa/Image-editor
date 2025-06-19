@@ -135,6 +135,12 @@ class ModularToolPanel:
             masks_panel = self.panel_manager.get_panel("masks")
             if masks_panel:
                 masks_panel.draw()
+        
+        # Register deferred callbacks after all UI elements are created
+        self._register_all_deferred_callbacks()
+        
+        # Setup global double-click handler for slider resets
+        self._setup_global_double_click_handler()
     
     def _draw_histogram_panel(self):
         """Draw the histogram panel."""
@@ -183,6 +189,82 @@ class ModularToolPanel:
             self.curves_panel.set_curves(params['curves'])
             self.curves = params['curves']
     
+    def reset_all_parameters(self):
+        """Reset all processing parameters to their default values."""
+        try:
+            # Temporarily disable callbacks to prevent triggering while resetting
+            self.disable_parameter_callbacks()
+            
+            # Get default parameter values from all panels using their own definitions
+            default_params = self.panel_manager.get_all_default_parameters()
+            
+            # Add any additional default parameters not handled by panels
+            additional_defaults = {
+                'rotation_slider': 0
+            }
+            default_params.update(additional_defaults)
+            
+            # Reset UI controls to default values
+            for param_name, default_value in default_params.items():
+                if UIStateManager.safe_item_exists(param_name):
+                    UIStateManager.safe_set_value(param_name, default_value)
+            
+            # Reset curves to default (linear)
+            if self.curves_panel:
+                self.curves_panel.curves = {
+                    "r": [(0, 0), (128, 128), (255, 255)],
+                    "g": [(0, 0), (128, 128), (255, 255)],
+                    "b": [(0, 0), (128, 128), (255, 255)]
+                }
+                if hasattr(self.curves_panel, 'update_plot'):
+                    self.curves_panel.update_plot()
+            
+            # Reset self.curves to match
+            self.curves = {
+                "r": [(0, 0), (128, 128), (255, 255)],
+                "g": [(0, 0), (128, 128), (255, 255)],
+                "b": [(0, 0), (128, 128), (255, 255)]
+            }
+            
+            # Reset mask editing state and disable mask mode if active
+            masks_panel = self.panel_manager.get_panel("masks")
+            if masks_panel:
+                # Disable mask editing if currently active
+                if masks_panel.mask_editing_enabled:
+                    masks_panel._disable_mask_editing()
+                
+                # Ensure mask section is toggled off
+                if UIStateManager.safe_item_exists("mask_section_toggle"):
+                    UIStateManager.safe_set_value("mask_section_toggle", False)
+                    UIStateManager.safe_configure_item("mask_panel", show=False)
+            
+            # Reset the image processor to original state if available
+            if (self.main_window and 
+                hasattr(self.main_window, 'app_service') and 
+                self.main_window.app_service and
+                hasattr(self.main_window.app_service, 'image_service') and
+                self.main_window.app_service.image_service and
+                hasattr(self.main_window.app_service.image_service, 'image_processor') and
+                self.main_window.app_service.image_service.image_processor):
+                
+                processor = self.main_window.app_service.image_service.image_processor
+                if hasattr(processor, 'reset'):
+                    processor.reset()
+            
+            # Re-enable callbacks
+            self.enable_parameter_callbacks()
+            
+            # Trigger a parameter change to update the image
+            if self.callback:
+                self.callback(None, None, None)
+            
+        except Exception as e:
+            print(f"Error resetting parameters: {e}")
+            import traceback
+            traceback.print_exc()
+            # Make sure to re-enable callbacks even if there's an error
+            self.enable_parameter_callbacks()
+
     def get_all_parameters(self) -> Dict[str, Any]:
         """Get all tool parameters from all panels."""
         params = {}
@@ -209,9 +291,17 @@ class ModularToolPanel:
     
     def update_masks(self, masks, mask_names=None):
         """Update masks in the masks panel."""
-        masks_panel = self.panel_manager.get_panel("masks")
-        if masks_panel:
-            masks_panel.update_masks(masks, mask_names)
+        try:
+            print(f"ToolPanel: updating masks table with {len(masks)} masks")
+            masks_panel = self.panel_manager.get_panel("masks")
+            if masks_panel:
+                masks_panel.update_masks(masks, mask_names)
+            else:
+                print("Masks panel not found in panel manager")
+        except Exception as e:
+            print(f"Error in ToolPanel.update_masks: {e}")
+            import traceback
+            traceback.print_exc()
     
     def toggle_crop_mode(self, sender, app_data, user_data):
         """Toggle crop mode (delegated to crop panel)."""
@@ -323,30 +413,54 @@ class ModularToolPanel:
         if crop_panel:
             crop_panel._crop_image(sender, app_data, user_data)
     
-    def get_all_parameters(self) -> Dict[str, Any]:
-        """Get all tool parameters from all panels."""
-        params = {}
-        
-        # Get parameters from each panel
-        for panel_name, panel in self.panel_manager.panels.items():
-            if hasattr(panel, 'get_parameters'):
-                panel_params = panel.get_parameters()
-                params.update(panel_params)
-        
-        # Get curves data if available
-        if self.curves_panel:
-            params['curves'] = {
-                'curves': self.curves,
-                'interpolation_mode': getattr(self.curves_panel, 'interpolation_mode', 'Linear')
-            }
-        
-        return params
-    
     def update_histogram(self, image):
         """Update histogram with new image data."""
         if self.histogram_panel:
             self.histogram_panel.update_histogram(image)
-
+    
+    def _register_all_deferred_callbacks(self):
+        """Register all deferred callbacks and double-click handlers for all panels."""
+        print("🔗 Registering deferred callbacks and double-click handlers...")
+        
+        # Register deferred callbacks for all component panels
+        for panel_name, panel in self.panel_manager.panels.items():
+            if hasattr(panel, 'register_deferred_callbacks'):
+                panel.register_deferred_callbacks()
+                print(f"✓ Registered deferred callbacks for {panel_name} panel")
+        
+        print("✅ All deferred callbacks registered")
+    
+    def _setup_global_double_click_handler(self):
+        """Setup global double-click handler for slider reset functionality."""
+        print("🖱️  Setting up global double-click handler for slider resets...")
+        
+        def global_double_click_handler(sender, app_data, user_data):
+            """Handle global double-click events for slider resets."""
+            # Collect all slider defaults from all panels
+            all_slider_defaults = {}
+            for panel_name, panel in self.panel_manager.panels.items():
+                if hasattr(panel, 'get_slider_defaults'):
+                    slider_defaults = panel.get_slider_defaults()
+                    all_slider_defaults.update(slider_defaults)
+            
+            # Check if any slider is being hovered and reset it
+            for tag, default_value in all_slider_defaults.items():
+                if dpg.does_item_exist(tag) and dpg.is_item_hovered(tag):
+                    # Reset the slider to its default value
+                    dpg.set_value(tag, default_value)
+                    
+                    # Trigger the parameter change callback to update the image
+                    if self.callback:
+                        self.callback(tag, default_value, None)
+                    return  # Only reset one slider per double-click
+        
+        try:
+            # Add global double-click handler
+            with dpg.handler_registry():
+                dpg.add_mouse_double_click_handler(callback=global_double_click_handler)
+            print("✓ Global double-click handler setup complete")
+        except Exception as e:
+            print(f"❌ Failed to setup global double-click handler: {e}")
 
 # Legacy compatibility - alias the new class to the old name
 # This allows existing code to use the new modular implementation

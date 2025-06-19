@@ -7,6 +7,8 @@ Replaces the original 1,093-line main_window.py with a modular, maintainable ver
 import dearpygui.dearpygui as dpg
 import cv2
 import numpy as np
+import traceback
+import os
 from typing import Optional, List, Tuple
 
 from core.application import ApplicationService
@@ -104,15 +106,17 @@ class ProductionMainWindow:
             with dpg.group(horizontal=True):
                 self._create_central_panel()
                 self._create_right_panel()
+            
+            # Add status bar at the bottom
+            with dpg.group(horizontal=True, width=-1):
+                dpg.add_text("Ready", tag="status_text")
     
     def _create_menu_bar(self) -> None:
         """Create the menu bar."""
         with dpg.menu_bar():
             with dpg.menu(label="File"):
                 dpg.add_menu_item(label="Open Image", callback=self._open_image)
-                dpg.add_menu_item(label="Save Image", callback=self._save_image)
-                dpg.add_separator()
-                dpg.add_menu_item(label="Export Processed", callback=self._export_processed)
+                dpg.add_menu_item(label="Export Image", callback=self._export_image)
                 dpg.add_separator()
                 dpg.add_menu_item(label="Exit", callback=lambda: dpg.stop_dearpygui())
             
@@ -267,18 +271,43 @@ class ProductionMainWindow:
     
     def _on_mouse_wheel(self, sender, app_data):
         """Handle mouse wheel events for zooming."""
-        # Implement zoom functionality
-        pass
+        # Only zoom when mouse is over the image plot and we have an image loaded
+        if (dpg.does_item_exist(self.image_plot_tag) and 
+            self.crop_rotate_ui and 
+            dpg.is_item_hovered(self.image_plot_tag)):
+            
+            # Get current plot limits
+            x_limits = dpg.get_axis_limits(self.x_axis_tag)
+            y_limits = dpg.get_axis_limits(self.y_axis_tag)
+            
+            # Calculate zoom factor based on wheel direction
+            # Positive app_data = scroll up = zoom in (smaller zoom factor)
+            # Negative app_data = scroll down = zoom out (larger zoom factor)
+            zoom_factor = 0.9 if app_data > 0 else 1.1
+            
+            # Calculate new limits centered around current view center
+            x_range = x_limits[1] - x_limits[0]
+            y_range = y_limits[1] - y_limits[0]
+            x_center = (x_limits[0] + x_limits[1]) / 2
+            y_center = (y_limits[0] + y_limits[1]) / 2
+            
+            new_x_range = x_range * zoom_factor
+            new_y_range = y_range * zoom_factor
+            
+            # Set new limits
+            dpg.set_axis_limits(self.x_axis_tag, x_center - new_x_range/2, x_center + new_x_range/2)
+            dpg.set_axis_limits(self.y_axis_tag, y_center - new_y_range/2, y_center + new_y_range/2)
+            
+            return True  # Event consumed
+        
+        return False
     
     def _on_parameter_change(self, sender, app_data, user_data):
         """Handle parameter changes from tool panel."""
         if self._updating_display:
-            print("Display update in progress, skipping parameter change...")
             return
             
         try:
-            print(f"Parameter changed: {sender} = {app_data}")
-            
             # Get current image
             current_image = self.app_service.image_service.get_current_image()
             if current_image is None:
@@ -294,17 +323,28 @@ class ProductionMainWindow:
                 # Get parameter values from UI
                 params = self._collect_current_parameters()
                 
+                # Check for automatic mask reset if we're in mask editing mode
+                self._check_for_automatic_mask_reset(params)
+                
                 # Update processor parameters
                 processor.exposure = params.get('exposure', 0)
                 processor.illumination = params.get('illumination', 0.0)
                 processor.contrast = params.get('contrast', 1.0)
                 processor.shadow = params.get('shadow', 0)
+                processor.highlights = params.get('highlights', 0)
                 processor.whites = params.get('whites', 0)
                 processor.blacks = params.get('blacks', 0)
                 processor.saturation = params.get('saturation', 1.0)
                 processor.texture = params.get('texture', 0)
                 processor.grain = params.get('grain', 0)
                 processor.temperature = params.get('temperature', 0)
+                
+                # Set curves data on processor for apply_all_edits to use
+                curves_data = params.get('curves')
+                if curves_data:
+                    processor.curves_data = curves_data
+                else:
+                    processor.curves_data = None
                 
                 # Apply all edits and get processed image
                 processed_image = processor.apply_all_edits()
@@ -317,12 +357,115 @@ class ProductionMainWindow:
                     else:
                         # Fallback: use our own texture update
                         self._update_texture(processed_image)
+                    
+                    # Update histogram with the processed image
+                    if self.tool_panel:
+                        try:
+                            self.tool_panel.update_histogram(processed_image)
+                        except AttributeError:
+                            pass  # Histogram update not available
             
         except Exception as e:
             print(f"Error handling parameter change: {e}")
-            import traceback
             traceback.print_exc()
     
+    def _check_for_automatic_mask_reset(self, current_params):
+        """Check if current parameters are at defaults and automatically reset mask if so."""
+        try:
+            # Only check if we have a tool panel with masks
+            if not (self.tool_panel and hasattr(self.tool_panel, 'panel_manager')):
+                return
+                
+            masks_panel = self.tool_panel.panel_manager.get_panel("masks")
+            if not masks_panel:
+                return
+            
+            # Only do auto-reset if we're in mask editing mode and there are committed changes
+            if not (masks_panel.mask_editing_enabled and 
+                   masks_panel.current_mask_index >= 0 and
+                   masks_panel.current_mask_index in masks_panel.mask_committed_params):
+                return
+            
+            # Define default parameter values
+            default_params = {
+                'exposure': 0,
+                'illumination': 0.0,
+                'contrast': 1.0,
+                'shadow': 0,
+                'highlights': 0,
+                'whites': 0,
+                'blacks': 0,
+                'saturation': 1.0,
+                'texture': 0,
+                'grain': 0,
+                'temperature': 0
+            }
+            
+            # Check if curves are at default (linear)
+            curves_at_default = True
+            if self.tool_panel.curves_panel:
+                curves = self.tool_panel.curves_panel.get_curves()
+                if curves and 'curves' in curves:
+                    default_curve = [(0, 0), (128, 128), (255, 255)]
+                    curve_data = curves['curves']
+                    for channel in ['r', 'g', 'b']:
+                        if channel in curve_data and curve_data[channel] != default_curve:
+                            curves_at_default = False
+                            break
+            
+            # Check if all parameters are at their default values
+            all_at_defaults = True
+            for param_name, default_value in default_params.items():
+                current_value = current_params.get(param_name, default_value)
+                # Handle floating point comparison with small tolerance
+                if isinstance(default_value, float):
+                    if abs(current_value - default_value) > 0.001:
+                        all_at_defaults = False
+                        break
+                else:
+                    if current_value != default_value:
+                        all_at_defaults = False
+                        break
+            
+            # If all parameters AND curves are at defaults, trigger automatic reset
+            if all_at_defaults and curves_at_default:
+                mask_index = masks_panel.current_mask_index
+                print(f"🔄 All parameters at defaults - automatically resetting mask {mask_index} to original state")
+                
+                # Check if we have a base state to restore to
+                if mask_index not in masks_panel.mask_base_image_states:
+                    print(f"⚠️ No base image state saved for mask {mask_index}, cannot auto-reset")
+                    return
+                
+                # Get the processor
+                processor = self.app_service.image_service.image_processor
+                if not processor:
+                    return
+                
+                # Restore the base image to the saved state before this mask was edited
+                saved_base_state = masks_panel.mask_base_image_states[mask_index]
+                processor.base_image = saved_base_state.copy()
+                print(f"🔄 Auto-restored base image to state before mask {mask_index} was first edited")
+                
+                # Clear committed parameters since we've reverted the base image
+                if mask_index in masks_panel.mask_committed_params:
+                    del masks_panel.mask_committed_params[mask_index]
+                    print(f"🗑️ Cleared committed parameters for mask {mask_index} (auto-reset)")
+                
+                # Keep current UI parameters (which should be at defaults) 
+                # This allows user to see they're at defaults and start fresh if they want
+                current_params = masks_panel._get_current_parameters()
+                curves_data = masks_panel._get_current_curves_data()
+                masks_panel.mask_params[mask_index] = {
+                    'parameters': current_params,
+                    'curves': curves_data
+                }
+                
+                print(f"✅ Automatically reset mask {mask_index} to original state")
+                
+        except Exception as e:
+            print(f"Error in automatic mask reset: {e}")
+
     def _collect_current_parameters(self) -> dict:
         """Collect current parameter values from the tool panel."""
         params = {}
@@ -336,6 +479,8 @@ class ProductionMainWindow:
                 params['contrast'] = dpg.get_value("contrast")
             if safe_item_check("shadow"):
                 params['shadow'] = dpg.get_value("shadow")
+            if safe_item_check("highlights"):
+                params['highlights'] = dpg.get_value("highlights")
             if safe_item_check("whites"):
                 params['whites'] = dpg.get_value("whites")
             if safe_item_check("blacks"):
@@ -361,6 +506,12 @@ class ProductionMainWindow:
             if safe_item_check("clarity"):
                 params['clarity'] = dpg.get_value("clarity")
             
+            # Collect curves data from tool panel
+            if self.tool_panel and self.tool_panel.curves_panel:
+                curves_data = self.tool_panel.curves_panel.get_curves()
+                if curves_data:
+                    params['curves'] = curves_data
+            
         except Exception as e:
             print(f"Error collecting parameters: {e}")
         
@@ -373,18 +524,20 @@ class ProductionMainWindow:
             dpg.show_item("file_open_dialog")
     
     def _save_image(self):
-        """Save current image."""
-        if safe_item_check("file_save_dialog"):
-            dpg.show_item("file_save_dialog")
+        """Save current image using export dialog."""
+        self._export_image()
+    
+    def _export_image(self):
+        """Show the export image modal."""
+        if safe_item_check("export_modal"):
+            dpg.show_item("export_modal")
+        else:
+            self._create_export_modal()
+            dpg.show_item("export_modal")
     
     def _export_processed(self):
-        """Export processed image."""
-        current_image = self.app_service.image_service.get_processed_image()
-        if current_image is not None:
-            if safe_item_check("file_save_dialog"):
-                dpg.show_item("file_save_dialog")
-        else:
-            print("No processed image to export")
+        """Export processed image - legacy function, redirects to export."""
+        self._export_image()
     
     def _reset_all_processing(self):
         """Reset all processing parameters."""
@@ -417,29 +570,346 @@ class ProductionMainWindow:
             if dpg.does_item_exist(self.draw_list_tag):
                 dpg.configure_item(self.draw_list_tag, show=False)
     
+    def _create_export_modal(self):
+        """Create the comprehensive export modal dialog."""
+        import os
+        
+        # Create directory selection dialog at top level (not inside modal)
+        with dpg.file_dialog(
+            directory_selector=True,
+            show=False,
+            callback=self._export_path_callback,
+            cancel_callback=self._export_path_cancel_callback,
+            tag="export_path_dialog",
+            width=600,
+            height=400,
+            modal=True
+        ):
+            pass
+        
+        with dpg.window(
+            label="Export Image",
+            tag="export_modal",
+            modal=True,
+            show=False,
+            width=500,
+            height=400,
+            no_resize=True
+        ):
+            dpg.add_text("Export Settings", color=[176, 204, 255])
+            dpg.add_separator()
+            dpg.add_spacer(height=10)
+            
+            # File name section
+            with dpg.group(horizontal=True):
+                dpg.add_text("File Name:")
+                dpg.add_spacer(width=20)
+                dpg.add_input_text(
+                    tag="export_filename",
+                    default_value="exported_image",
+                    width=300,
+                    hint="Enter filename without extension",
+                    callback=self._update_export_preview
+                )
+            
+            dpg.add_spacer(height=10)
+            
+            # File type section
+            with dpg.group(horizontal=True):
+                dpg.add_text("Format:")
+                dpg.add_spacer(width=43)
+                dpg.add_combo(
+                    tag="export_format",
+                    items=["PNG", "JPEG", "BMP", "TIFF"],
+                    default_value="PNG",
+                    width=150,
+                    callback=self._on_format_change
+                )
+            
+            dpg.add_spacer(height=10)
+            
+            # Quality section (initially hidden for PNG)
+            with dpg.group(tag="quality_group", show=False):
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Quality:")
+                    dpg.add_spacer(width=34)
+                    dpg.add_slider_int(
+                        tag="export_quality",
+                        default_value=95,
+                        min_value=1,
+                        max_value=100,
+                        width=200,
+                        format="%d%%",
+                        callback=self._update_export_preview
+                    )
+                dpg.add_spacer(height=10)
+            
+            # Path selection section
+            with dpg.group(horizontal=True):
+                dpg.add_text("Save to:")
+                dpg.add_spacer(width=30)
+                dpg.add_input_text(
+                    tag="export_path",
+                    default_value=os.path.expanduser("~"),
+                    width=250,
+                    readonly=True
+                )
+                dpg.add_button(
+                    label="Browse...",
+                    width=70,
+                    callback=self._browse_export_path
+                )
+            
+            dpg.add_spacer(height=20)
+            dpg.add_separator()
+            dpg.add_spacer(height=10)
+            
+            # Preview information
+            dpg.add_text("Preview:", color=[200, 200, 200])
+            dpg.add_text("", tag="export_preview", wrap=400)
+            
+            dpg.add_spacer(height=20)
+            
+            # Buttons
+            with dpg.group(horizontal=True):
+                dpg.add_spacer(width=250)
+                dpg.add_button(
+                    label="Cancel",
+                    width=70,
+                    callback=lambda: dpg.hide_item("export_modal")
+                )
+                dpg.add_spacer(width=10)
+                dpg.add_button(
+                    label="Export",
+                    width=70,
+                    callback=self._perform_export
+                )
+        
+        # Update preview initially
+        self._update_export_preview()
+    
+    def _on_format_change(self, sender, app_data, user_data):
+        """Handle format change in export dialog."""
+        format_type = dpg.get_value("export_format")
+        
+        # Show/hide quality slider based on format
+        if format_type == "JPEG":
+            dpg.configure_item("quality_group", show=True)
+        else:
+            dpg.configure_item("quality_group", show=False)
+        
+        self._update_export_preview()
+    
+    def _browse_export_path(self):
+        """Open path browser for export location."""
+        print("📂 Browse export path clicked")
+        
+        # Temporarily hide the export modal to avoid layering issues
+        if dpg.does_item_exist("export_modal"):
+            dpg.hide_item("export_modal")
+            print("🔄 Hid export modal")
+        
+        # Show the path dialog
+        if dpg.does_item_exist("export_path_dialog"):
+            dpg.show_item("export_path_dialog")
+            print("🔄 Showed path dialog")
+        else:
+            print("❌ Export path dialog does not exist")
+    
+    def _export_path_callback(self, sender, app_data, user_data):
+        """Handle export path selection."""
+        print(f"📁 Export path callback triggered")
+        print(f"   Sender: {sender}")
+        print(f"   App data: {app_data}")
+        print(f"   User data: {user_data}")
+        
+        # Hide the path dialog first
+        if dpg.does_item_exist("export_path_dialog"):
+            dpg.hide_item("export_path_dialog")
+        
+        # Try to extract path from different possible data structures
+        selected_path = ""
+        if isinstance(app_data, dict):
+            # Try different keys that DearPyGUI might use
+            selected_path = app_data.get("file_path_name", "")
+            if not selected_path:
+                selected_path = app_data.get("current_path", "")
+            if not selected_path:
+                selected_path = app_data.get("file_name", "")
+        elif isinstance(app_data, str):
+            # Direct string path
+            selected_path = app_data
+        
+        if selected_path:
+            print(f"✅ Selected path: {selected_path}")
+            if dpg.does_item_exist("export_path"):
+                dpg.set_value("export_path", selected_path)
+            self._update_export_preview()
+        else:
+            print("❌ No path selected or path extraction failed")
+        
+        # Use a small delay to ensure proper order of operations
+        def show_modal_after_delay():
+            if dpg.does_item_exist("export_modal"):
+                dpg.show_item("export_modal")
+                print("🔄 Showed export modal again (delayed)")
+            else:
+                print("❌ Export modal does not exist (delayed check)")
+        
+        # Schedule the modal to show after a small delay
+        import threading
+        timer = threading.Timer(0.1, show_modal_after_delay)
+        timer.start()
+    
+    def _export_path_cancel_callback(self, sender, app_data, user_data):
+        """Handle export path dialog cancellation."""
+        print("🚫 Export path dialog cancelled")
+        
+        # Hide the path dialog
+        if dpg.does_item_exist("export_path_dialog"):
+            dpg.hide_item("export_path_dialog")
+        
+        # Use a small delay to ensure proper order of operations  
+        def show_modal_after_delay():
+            if dpg.does_item_exist("export_modal"):
+                dpg.show_item("export_modal")
+                print("🔄 Showed export modal again after cancel (delayed)")
+            else:
+                print("❌ Export modal does not exist (delayed check)")
+        
+        # Schedule the modal to show after a small delay
+        import threading
+        timer = threading.Timer(0.1, show_modal_after_delay)
+        timer.start()
+    
+    def _update_export_preview(self):
+        """Update the export preview text."""
+        try:
+            filename = dpg.get_value("export_filename")
+            format_type = dpg.get_value("export_format")
+            path = dpg.get_value("export_path")
+            
+            if not filename:
+                filename = "exported_image"
+            
+            extension = {
+                "PNG": ".png",
+                "JPEG": ".jpg", 
+                "BMP": ".bmp",
+                "TIFF": ".tif"
+            }.get(format_type, ".png")
+            
+            full_path = os.path.join(path, filename + extension)
+            
+            preview_text = f"File: {filename}{extension}\nLocation: {path}\nFull path: {full_path}"
+            
+            if format_type == "JPEG":
+                quality = dpg.get_value("export_quality")
+                preview_text += f"\nQuality: {quality}%"
+            
+            dpg.set_value("export_preview", preview_text)
+            
+        except Exception as e:
+            dpg.set_value("export_preview", f"Preview error: {e}")
+    
+    def _perform_export(self):
+        """Perform the actual image export."""
+        try:
+            # Get current processed image
+            current_image = self.app_service.image_service.get_processed_image()
+            if current_image is None:
+                dpg.set_value("export_preview", "Error: No image to export")
+                return
+            
+            # Get export settings
+            filename = dpg.get_value("export_filename").strip()
+            format_type = dpg.get_value("export_format")
+            path = dpg.get_value("export_path")
+            
+            if not filename:
+                dpg.set_value("export_preview", "Error: Please enter a filename")
+                return
+            
+            # Create file extension mapping
+            extension = {
+                "PNG": ".png",
+                "JPEG": ".jpg",
+                "BMP": ".bmp", 
+                "TIFF": ".tif"
+            }.get(format_type, ".png")
+            
+            # Build full file path
+            full_path = os.path.join(path, filename + extension)
+            
+            # Check if directory exists
+            if not os.path.exists(path):
+                dpg.set_value("export_preview", f"Error: Directory does not exist: {path}")
+                return
+            
+            # Import required modules
+            import cv2
+            import numpy as np
+            
+            # Prepare image for saving
+            save_image = current_image.copy()
+            
+            # Convert color format for OpenCV (RGB to BGR)
+            if len(save_image.shape) == 3:
+                if save_image.shape[2] == 3:
+                    save_image = cv2.cvtColor(save_image, cv2.COLOR_RGB2BGR)
+                elif save_image.shape[2] == 4:
+                    save_image = cv2.cvtColor(save_image, cv2.COLOR_RGBA2BGRA)
+            
+            # Set up save parameters based on format
+            save_params = []
+            if format_type == "JPEG":
+                quality = dpg.get_value("export_quality")
+                save_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
+            elif format_type == "PNG":
+                save_params = [cv2.IMWRITE_PNG_COMPRESSION, 6]  # Good compression
+            
+            # Save the image
+            success = cv2.imwrite(full_path, save_image, save_params)
+            
+            if success:
+                print(f"✓ Image exported successfully to: {full_path}")
+                dpg.set_value("export_preview", f"✓ Successfully exported to:\n{full_path}")
+                
+                # Close modal after short delay
+                def close_modal():
+                    dpg.hide_item("export_modal")
+                
+                # Close immediately for now - could add timer if wanted
+                close_modal()
+                
+            else:
+                dpg.set_value("export_preview", f"✗ Failed to export image to:\n{full_path}")
+                print(f"✗ Failed to export image to: {full_path}")
+                
+        except Exception as e:
+            error_msg = f"Export error: {str(e)}"
+            dpg.set_value("export_preview", error_msg)
+            print(f"Export error: {e}")
+            import traceback
+            traceback.print_exc()
+    
     # Image Display Management
     def _update_image_display(self):
         """Update the image display with current processed image."""
         if self._updating_display:
-            print("Display update already in progress, skipping...")
             return
         
         self._updating_display = True
         try:
-            print("📷 Updating image display...")
             processed_image = self.app_service.image_service.get_processed_image()
             if processed_image is None:
-                print("No processed image available")
                 return
             
             # Update texture
             self._update_texture(processed_image)
             
-            print("✓ Image display updated successfully")
-            
         except Exception as e:
             print(f"Error updating image display: {e}")
-            import traceback
             traceback.print_exc()
         finally:
             self._updating_display = False
@@ -447,13 +917,11 @@ class ProductionMainWindow:
     def _update_texture(self, image: np.ndarray):
         """Update image texture using the original working pattern from CropRotateUI."""
         if self._updating_display:
-            print("⚠️ Display update in progress, skipping texture update...")
             return
         
         # Check if crop mode is active - if so, let CropRotateUI handle texture updates
         crop_mode_active = safe_item_check("crop_mode") and dpg.get_value("crop_mode")
         if crop_mode_active and self.crop_rotate_ui:
-            print("🔄 Crop mode active - delegating texture update to CropRotateUI")
             # Update the CropRotateUI's original image first
             self.crop_rotate_ui.original_image = image.copy()
             # Let CropRotateUI handle the texture update
@@ -461,7 +929,6 @@ class ProductionMainWindow:
             return
             
         try:
-            print(f"🎨 Updating texture using original pattern...")
             
             # Prepare image data following original CropRotateUI pattern
             height, width = image.shape[:2]
@@ -485,8 +952,6 @@ class ProductionMainWindow:
                 scaled_height = int(height * scale_factor)
                 image = cv2.resize(image, (scaled_width, scaled_height))
                 width, height = scaled_width, scaled_height
-            
-            print(f"Texture size: {texture_width}x{texture_height}, Image size: {width}x{height}, Scale: {scale_factor:.3f}")
             
             # Create gray background like original implementation
             gray_background = np.full((texture_height, texture_width, 4), 
@@ -523,15 +988,11 @@ class ProductionMainWindow:
             # Convert to float32 and normalize like original
             texture_data = gray_background.flatten().astype(np.float32) / 255.0;
             
-            print(f"Texture data prepared: {texture_width}x{texture_height}, range: {texture_data.min():.3f}-{texture_data.max():.3f}")
-            print(f"Image positioned at offset: ({offset_x}, {offset_y}), original size: {width}x{height}")
-            
             # Use original pattern: update existing texture or create new one
             texture_tag = "main_display_texture"
             if dpg.does_item_exist(texture_tag):
                 # Update existing texture data (like original implementation)
                 dpg.set_value(texture_tag, texture_data)
-                print(f"✓ Updated existing texture {texture_tag}")
             else:
                 # Create new raw texture (like original implementation)
                 with dpg.texture_registry():
@@ -541,7 +1002,6 @@ class ProductionMainWindow:
                         tag=texture_tag,
                         format=dpg.mvFormat_Float_rgba
                     )
-                print(f"✓ Created new raw texture {texture_tag}")
                 
                 # Create image series
                 if dpg.does_item_exist(self.y_axis_tag):
@@ -552,7 +1012,6 @@ class ProductionMainWindow:
                         parent=self.y_axis_tag,
                         tag="main_image_series"
                     )
-                    print("✓ Created image series")
             
             # Store current texture info
             self.current_texture_tag = texture_tag
@@ -562,11 +1021,8 @@ class ProductionMainWindow:
             # Update axis limits to center on actual image
             self._update_axis_limits_to_image()
             
-            print(f"✓ Texture update completed successfully")
-            
         except Exception as e:
             print(f"Error updating texture: {e}")
-            import traceback
             traceback.print_exc()
     
     def _update_axis_limits_to_image(self):
@@ -599,9 +1055,6 @@ class ProductionMainWindow:
             plot_aspect = plot_width / plot_height
             image_aspect = orig_w / orig_h
             
-            print(f"Calculating axis limits: image={orig_w}x{orig_h}, texture={texture_w}x{texture_h}, plot={plot_width}x{plot_height}")
-            print(f"Aspect ratios: plot={plot_aspect:.3f}, image={image_aspect:.3f}")
-            
             # Calculate how to fit the actual image (not texture) within the plot while maintaining aspect ratio
             # We want to show the image area with some padding to see the whole image properly
             padding_factor = 1.05  # 5% padding around the image
@@ -633,29 +1086,32 @@ class ProductionMainWindow:
                 y_min = y_center - display_height / 2
                 y_max = y_center + display_height / 2
             
-            print(f"Calculated view bounds: x=[{x_min:.1f}, {x_max:.1f}], y=[{y_min:.1f}, {y_max:.1f}]")
-            print(f"Image center: ({x_center:.1f}, {y_center:.1f}), display size: {display_width:.1f}x{display_height:.1f}")
-            
             # Set the axis limits to center on the actual image
             if safe_item_check(self.x_axis_tag):
                 dpg.set_axis_limits(self.x_axis_tag, x_min, x_max)
-                print(f"✓ Set X axis limits: {x_min:.1f} to {x_max:.1f}")
             
             if safe_item_check(self.y_axis_tag):
                 dpg.set_axis_limits(self.y_axis_tag, y_min, y_max)
-                print(f"✓ Set Y axis limits: {y_min:.1f} to {y_max:.1f}")
                 
         except Exception as e:
             print(f"Error updating axis limits: {e}")
-            import traceback
             traceback.print_exc()
 
     # Segmentation Handlers
     def _handle_segmentation_mouse_down(self, app_data):
         """Handle mouse down events for segmentation mode."""
-        if self.segmentation_bbox_renderer and dpg.is_item_hovered(self.image_plot_tag):
-            return self.segmentation_bbox_renderer.on_mouse_down(None, app_data)
-        return False
+        if not self.segmentation_bbox_renderer:
+            return False
+            
+        if not dpg.is_item_hovered(self.image_plot_tag):
+            return False
+            
+        # Reset any pending box when starting a new one
+        if app_data == 0:  # Left mouse button
+            self.pending_segmentation_box = None
+            
+        result = self.segmentation_bbox_renderer.on_mouse_down(None, app_data)
+        return result
     
     def _handle_box_selection_mouse_down(self, app_data):
         """Handle mouse down events for box selection mode."""
@@ -712,8 +1168,19 @@ class ProductionMainWindow:
                     max(self.box_start[1], self.box_end[1])
                 ]
                 
-                # Perform segmentation with the box
-                self.segment_with_box(box)
+                # Make sure all values are finite numbers
+                if all(isinstance(coord, (int, float)) and np.isfinite(coord) for coord in box):
+                    print(f"Valid box selection: {box}")
+                    # Perform segmentation with the box
+                    self.segment_with_box(box)
+                else:
+                    print(f"Invalid box coordinates: {box}")
+                    # Show error message to user if possible
+                    dpg.configure_item("status_text", default_value="Error: Invalid selection area")
+            else:
+                print("Box selection too small (must be > 10x10 pixels)")
+                # Show error message to user if possible
+                dpg.configure_item("status_text", default_value="Selection area too small")
             
             # Hide the drawing layer containing the rectangle
             if dpg.does_item_exist(self.draw_list_tag):
@@ -820,6 +1287,14 @@ class ProductionMainWindow:
     def _on_segmentation_bbox_change(self, bbox: BoundingBox) -> None:
         """Called when segmentation bounding box changes during drag."""
         if self.segmentation_mode and self.segmentation_texture is not None:
+            # Update the pending box during drag for a more responsive experience
+            if bbox and bbox.width > 5 and bbox.height > 5:
+                self.pending_segmentation_box = bbox.to_dict()
+                
+                # Update status text with current dimensions
+                if dpg.does_item_exist("status_text"):
+                    dpg.configure_item("status_text", default_value=f"Selection: {int(bbox.width)}x{int(bbox.height)}")
+            
             self._update_segmentation_overlay()
     
     def _on_segmentation_bbox_start_drag(self, bbox: BoundingBox) -> None:
@@ -829,8 +1304,28 @@ class ProductionMainWindow:
     def _on_segmentation_bbox_end_drag(self, bbox: BoundingBox) -> None:
         """Called when segmentation bounding box drag ends."""
         if self.segmentation_mode and self.segmentation_texture is not None:
-            self.pending_segmentation_box = bbox.to_dict()
-            self._update_segmentation_overlay(force_update=True)
+            # Validate bounding box
+            if bbox and bbox.width > 10 and bbox.height > 10:
+                self.pending_segmentation_box = bbox.to_dict()
+                # Update status text
+                if dpg.does_item_exist("status_text"):
+                    dpg.configure_item("status_text", default_value=f"Selection area: {int(bbox.width)}x{int(bbox.height)}. Press Confirm to segment.")
+                self._update_segmentation_overlay(force_update=True)
+                
+                # Auto-confirm the selection after a small delay
+                # This helps users who might not realize they need to press the Confirm button
+                if hasattr(self, 'tool_panel') and self.tool_panel:
+                    try:
+                        if hasattr(self.tool_panel, 'enable_confirm_button'):
+                            self.tool_panel.enable_confirm_button()
+                    except Exception as e:
+                        print(f"Error enabling confirm button: {e}")
+            else:
+                self.pending_segmentation_box = None
+                if dpg.does_item_exist("status_text"):
+                    dpg.configure_item("status_text", default_value="Selection too small (must be larger than 10x10)")
+        else:
+            self.pending_segmentation_box = None
     
     def _update_segmentation_overlay(self, force_update=False):
         """Update the segmentation overlay with the current bounding box"""
@@ -847,8 +1342,12 @@ class ProductionMainWindow:
     
     def enable_segmentation_mode(self):
         """Enable segmentation mode with real-time bounding box"""
+        print("Enabling segmentation mode...")
+        
         if not self.crop_rotate_ui or not self.segmentation_bbox_renderer:
             print("Cannot enable segmentation mode: missing components")
+            if dpg.does_item_exist("status_text"):
+                dpg.configure_item("status_text", default_value="Error: Segmentation not available")
             return False
             
         # Disable crop mode if active
@@ -856,6 +1355,11 @@ class ProductionMainWindow:
             dpg.set_value("crop_mode", False)
             if self.tool_panel and hasattr(self.tool_panel, 'toggle_crop_mode'):
                 self.tool_panel.toggle_crop_mode(None, None, None)
+        
+        # Reset any existing segmentation state
+        self.pending_segmentation_box = None
+        if self.segmentation_bbox_renderer:
+            self.segmentation_bbox_renderer.reset()
         
         self.segmentation_mode = True
         
@@ -880,7 +1384,10 @@ class ProductionMainWindow:
             )
             self.segmentation_bbox_renderer.set_bounds(bounds)
         
-        print("Segmentation mode enabled - click and drag to select area")
+        # Update the status text
+        if dpg.does_item_exist("status_text"):
+            dpg.configure_item("status_text", default_value="Segmentation mode: click and drag to select area")
+            
         return True
     
     def disable_segmentation_mode(self):
@@ -895,8 +1402,6 @@ class ProductionMainWindow:
         # Refresh the display without segmentation overlay
         if self.crop_rotate_ui:
             self.crop_rotate_ui.update_image(None, None, None)
-        
-        print("Segmentation mode disabled")
     
     def _create_segmentation_texture(self):
         """Create segmentation texture from current image"""
@@ -926,16 +1431,72 @@ class ProductionMainWindow:
     
     def confirm_segmentation_selection(self):
         """Confirm the current segmentation selection and perform segmentation"""
-        if not self.pending_segmentation_box or not self.segmentation_mode:
+        print(f"Confirm selection called - pending_box: {self.pending_segmentation_box}, segmentation_mode: {self.segmentation_mode}")
+        
+        # Debug current state
+        if hasattr(self, 'segmentation_bbox_renderer') and self.segmentation_bbox_renderer:
+            if hasattr(self.segmentation_bbox_renderer, 'bounding_box') and self.segmentation_bbox_renderer.bounding_box:
+                current_box = self.segmentation_bbox_renderer.bounding_box
+                print(f"Current bounding box in renderer: {current_box.x}, {current_box.y}, {current_box.width}, {current_box.height}")
+                
+                # If we have a bounding box but no pending box, use the current box
+                if not self.pending_segmentation_box and current_box.width > 10 and current_box.height > 10:
+                    print("Using current bounding box since no pending box is set")
+                    self.pending_segmentation_box = current_box.to_dict()
+            else:
+                print("No bounding box in renderer")
+                
+                # Create a default bounding box as a fallback if user just clicks confirm without drawing
+                if not self.pending_segmentation_box and self.crop_rotate_ui and self.crop_rotate_ui.original_image is not None:
+                    h, w = self.crop_rotate_ui.original_image.shape[:2]
+                    offset_x = (self.crop_rotate_ui.texture_w - w) // 2
+                    offset_y = (self.crop_rotate_ui.texture_h - h) // 2
+                    
+                    # Create a box in the center that's 80% of the image size
+                    box_w = int(w * 0.8)
+                    box_h = int(h * 0.8)
+                    box_x = offset_x + (w - box_w) // 2
+                    box_y = offset_y + (h - box_h) // 2
+                    
+                    self.pending_segmentation_box = {
+                        "x": box_x,
+                        "y": box_y,
+                        "w": box_w,
+                        "h": box_h
+                    }
+                    
+                    # Update the renderer with this box
+                    if self.segmentation_bbox_renderer:
+                        default_box = BoundingBox(box_x, box_y, box_w, box_h)
+                        self.segmentation_bbox_renderer.set_bounding_box(default_box)
+                        self._update_segmentation_overlay(force_update=True)
+        else:
+            print("No segmentation_bbox_renderer available")
+        
+        if not self.segmentation_mode:
+            print("Segmentation mode is not active")
+            if dpg.does_item_exist("status_text"):
+                dpg.configure_item("status_text", default_value="Error: Segmentation mode not active")
+            return
+            
+        if not self.pending_segmentation_box:
             print("No segmentation area selected")
+            if dpg.does_item_exist("status_text"):
+                dpg.configure_item("status_text", default_value="Error: No area selected. Draw a box first.")
             return
             
         # Convert bounding box to the format expected by segment_with_box
         bbox = self.pending_segmentation_box
+        
+        # Validate the box dimensions
+        if bbox["w"] < 10 or bbox["h"] < 10:
+            print(f"Selection area too small: {bbox['w']}x{bbox['h']} (minimum 10x10)")
+            if dpg.does_item_exist("status_text"):
+                dpg.configure_item("status_text", default_value="Error: Selection area too small")
+            return
+            
         # Box format: [x1, y1, x2, y2]
         box = [bbox["x"], bbox["y"], bbox["x"] + bbox["w"], bbox["y"] + bbox["h"]]
-        
-        print(f"Confirming segmentation with box: {box}")
         
         # Disable segmentation mode
         self.disable_segmentation_mode()
@@ -957,7 +1518,6 @@ class ProductionMainWindow:
     
     def cancel_segmentation_selection(self):
         """Cancel the current segmentation selection"""
-        print("Segmentation selection cancelled")
         self.disable_segmentation_mode()
         
         # Update tool panel to reflect the change
@@ -975,6 +1535,8 @@ class ProductionMainWindow:
             if segmenter is None:
                 print("Failed to create segmenter instance")
                 self._hide_segmentation_loading()
+                if dpg.does_item_exist("status_text"):
+                    dpg.configure_item("status_text", default_value="Error: Failed to initialize segmenter")
                 return
                 
             image = self.crop_rotate_ui.original_image
@@ -983,6 +1545,13 @@ class ProductionMainWindow:
                 self.cleanup_segmenter_memory()
                 
                 masks = segmenter.segment(image)
+                
+                if not masks or len(masks) == 0:
+                    print("No masks generated during automatic segmentation")
+                    if dpg.does_item_exist("status_text"):
+                        dpg.configure_item("status_text", default_value="No objects detected in the image")
+                    return
+                    
                 # For automatic segmentation, replace all existing masks
                 self.layer_masks = masks  # Store masks for further editing
                 
@@ -992,9 +1561,16 @@ class ProductionMainWindow:
                 self.tool_panel.update_masks(masks, self.mask_names)
                 self.update_mask_overlays(masks)
                 
+                # Update status text with success message
+                if dpg.does_item_exist("status_text"):
+                    dpg.configure_item("status_text", default_value=f"Created {len(masks)} masks")
+                
                 print(f"Automatic segmentation completed with {len(masks)} masks (replaced all previous masks)")
             except Exception as e:
                 print(f"Error during automatic segmentation: {e}")
+                # Update status text with error message
+                if dpg.does_item_exist("status_text"):
+                    dpg.configure_item("status_text", default_value=f"Error: {str(e)}")
                 # On error, try to clean up memory and potentially reset segmenter
                 try:
                     self.cleanup_segmenter_memory()
@@ -1009,6 +1585,8 @@ class ProductionMainWindow:
                 self._hide_segmentation_loading()
         else:
             print("No image available for segmentation.")
+            if dpg.does_item_exist("status_text"):
+                dpg.configure_item("status_text", default_value="Error: No image available")
     
     def segment_with_box(self, box):
         """
@@ -1018,11 +1596,26 @@ class ProductionMainWindow:
             box: Bounding box coordinates [x1, y1, x2, y2] in texture coordinate system
                  (Y=0 at top, Y increases downward) from BoundingBoxRenderer
         """
+        if not all(isinstance(coord, (int, float)) and np.isfinite(coord) for coord in box):
+            print(f"Error: Invalid box coordinates: {box}")
+            if dpg.does_item_exist("status_text"):
+                dpg.configure_item("status_text", default_value="Error: Invalid selection area")
+            return
+            
+        # Validate box dimensions
+        if box[2] - box[0] <= 0 or box[3] - box[1] <= 0:
+            print(f"Error: Box has zero or negative dimensions: {box}")
+            if dpg.does_item_exist("status_text"):
+                dpg.configure_item("status_text", default_value="Error: Invalid selection dimensions")
+            return
+            
         if self.crop_rotate_ui and hasattr(self.crop_rotate_ui, "original_image"):
             # Get the reusable segmenter instance
             segmenter = self.get_segmenter()
             if segmenter is None:
                 print("Failed to create segmenter instance")
+                if dpg.does_item_exist("status_text"):
+                    dpg.configure_item("status_text", default_value="Error: Failed to initialize segmenter")
                 return
                 
             image = self.crop_rotate_ui.original_image
@@ -1046,11 +1639,19 @@ class ProductionMainWindow:
                 max(0, min(h-1, int(box[3] - offset_y)))      # Y2: Adjust Y for texture offset
             ]
             
+            # Check if the box is too small after scaling
+            if scaled_box[2] - scaled_box[0] < 10 or scaled_box[3] - scaled_box[1] < 10:
+                print(f"Error: Scaled box is too small: {scaled_box}")
+                if dpg.does_item_exist("status_text"):
+                    dpg.configure_item("status_text", default_value="Error: Selection too small relative to image")
+                return
+                
             print(f"Original box (texture coords): {box}")
             print(f"Texture dimensions: {texture_w}x{texture_h}")
             print(f"Image dimensions: {w}x{h}")
             print(f"Image offset in texture: ({offset_x}, {offset_y})")
             print(f"Segmenting with box (image coords): {scaled_box}")
+            
             try:
                 # Show loading indicator
                 self._show_segmentation_loading("Segmenting selected area...")
@@ -1060,31 +1661,60 @@ class ProductionMainWindow:
                 
                 new_masks = segmenter.segment_with_box(image, scaled_box)
                 
+                # Check if we got any masks
+                if not new_masks or len(new_masks) == 0:
+                    print("No masks generated from the selected area")
+                    if dpg.does_item_exist("status_text"):
+                        dpg.configure_item("status_text", default_value="No objects found in selection")
+                    return
+                
                 # Initialize layer_masks if it doesn't exist
                 if not hasattr(self, 'layer_masks') or self.layer_masks is None:
                     self.layer_masks = []
+                
+                # Initialize mask_names if it doesn't exist
+                if not hasattr(self, 'mask_names') or self.mask_names is None:
+                    self.mask_names = []
                 
                 # Always accumulate new masks with existing ones
                 start_index = len(self.layer_masks)
                 self.layer_masks.extend(new_masks)
                 
-                # Add names for new masks
-                if not hasattr(self, 'mask_names'):
-                    self.mask_names = []
                 # Ensure we have names for all existing masks first
                 while len(self.mask_names) < start_index:
                     self.mask_names.append(f"Mask {len(self.mask_names) + 1}")
+                    
                 # Add names for new masks
                 for idx in range(len(new_masks)):
                     self.mask_names.append(f"Mask {start_index + idx + 1}")
                 
-                print(f"Generated {len(new_masks)} new masks, total masks: {len(self.layer_masks)}")
+                print(f"Generated {len(new_masks)} new masks, total masks: {len(self.layer_masks)}, total names: {len(self.mask_names)}")
                 
                 # Update UI with all masks
-                self.tool_panel.update_masks(self.layer_masks, self.mask_names)
+                if hasattr(self, 'tool_panel') and self.tool_panel:
+                    try:
+                        print(f"Attempting to update masks table with {len(self.layer_masks)} masks and {len(self.mask_names)} names")
+                        # Use a copy of the data to prevent modification during iteration
+                        masks_copy = self.layer_masks.copy()
+                        names_copy = self.mask_names.copy()
+                        self.tool_panel.update_masks(masks_copy, names_copy)
+                        print("Masks table updated successfully")
+                    except Exception as e:
+                        print(f"Error updating masks table: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        
                 self.update_mask_overlays(self.layer_masks)
+                
+                # Update status text
+                if dpg.does_item_exist("status_text"):
+                    dpg.configure_item("status_text", default_value=f"Created {len(new_masks)} new masks")
+                
             except Exception as e:
                 print(f"Error during box segmentation: {e}")
+                # Update status text
+                if dpg.does_item_exist("status_text"):
+                    dpg.configure_item("status_text", default_value=f"Error: {str(e)}")
                 # On error, try to clean up memory and potentially reset segmenter
                 try:
                     self.cleanup_segmenter_memory()
@@ -1099,7 +1729,57 @@ class ProductionMainWindow:
                 self._hide_segmentation_loading()
         else:
             print("No image available for segmentation.")
+            if dpg.does_item_exist("status_text"):
+                dpg.configure_item("status_text", default_value="Error: No image available")
     
+    def _rotate_mask(self, mask, angle, orig_w, orig_h):
+        """
+        Rotate a binary mask by the given angle.
+        
+        Args:
+            mask: Binary mask array (2D numpy array)
+            angle: Rotation angle in degrees
+            orig_w: Original image width
+            orig_h: Original image height
+            
+        Returns:
+            Rotated mask array
+        """
+        try:
+            # Convert boolean mask to uint8 if needed
+            if mask.dtype == bool:
+                mask_uint8 = mask.astype(np.uint8) * 255
+            else:
+                mask_uint8 = mask.astype(np.uint8)
+            
+            # Get rotation matrix
+            center = (orig_w / 2, orig_h / 2)
+            M = cv2.getRotationMatrix2D(center, angle, 1.0)
+            
+            # Calculate new dimensions after rotation
+            cos = abs(M[0, 0])
+            sin = abs(M[0, 1])
+            new_w = int((orig_h * sin + orig_w * cos))
+            new_h = int((orig_h * cos + orig_w * sin))
+            
+            # Adjust the rotation matrix for the new image center
+            M[0, 2] += (new_w / 2) - center[0]
+            M[1, 2] += (new_h / 2) - center[1]
+            
+            # Apply rotation to mask
+            rotated_mask = cv2.warpAffine(mask_uint8, M, (new_w, new_h), 
+                                        flags=cv2.INTER_NEAREST,
+                                        borderMode=cv2.BORDER_CONSTANT, 
+                                        borderValue=0)
+            
+            # Convert back to boolean
+            return (rotated_mask > 127).astype(bool)
+            
+        except Exception as e:
+            print(f"Error rotating mask: {e}")
+            # Return original mask if rotation fails
+            return mask
+
     def update_mask_overlays(self, masks):
         """Update the visual mask overlays on the image"""
         if not masks or not self.crop_rotate_ui:
@@ -1110,6 +1790,11 @@ class ProductionMainWindow:
         w = self.crop_rotate_ui.texture_w
         orig_h = self.crop_rotate_ui.orig_h
         orig_w = self.crop_rotate_ui.orig_w
+        
+        # Get current rotation angle if available
+        current_angle = 0
+        if dpg.does_item_exist("rotation_slider"):
+            current_angle = dpg.get_value("rotation_slider")
         
         # Color palette for different masks (RGBA format)
         colors = [
@@ -1127,9 +1812,22 @@ class ProductionMainWindow:
         
         max_masks = len(masks)  # Support unlimited masks
         
-        # Calculate offset once
-        offset_x = (w - orig_w) // 2
-        offset_y = (h - orig_h) // 2
+        # Calculate offset based on rotation
+        if current_angle != 0 and hasattr(self.crop_rotate_ui, 'rotated_image') and self.crop_rotate_ui.rotated_image is not None:
+            # Use rotated image dimensions and offset
+            if hasattr(self.crop_rotate_ui, 'rot_h') and hasattr(self.crop_rotate_ui, 'rot_w'):
+                rotated_h = self.crop_rotate_ui.rot_h
+                rotated_w = self.crop_rotate_ui.rot_w
+                offset_x = (w - rotated_w) // 2
+                offset_y = (h - rotated_h) // 2
+            else:
+                # Fallback to original calculation
+                offset_x = (w - orig_w) // 2
+                offset_y = (h - orig_h) // 2
+        else:
+            # No rotation, use original calculation
+            offset_x = (w - orig_w) // 2
+            offset_y = (h - orig_h) // 2
         
         # Create a unique timestamp for this batch of masks to avoid tag conflicts
         import time
@@ -1142,7 +1840,6 @@ class ProductionMainWindow:
             if dpg.does_item_exist(old_series_tag):
                 try:
                     dpg.delete_item(old_series_tag)
-                    print(f"Deleted old series {old_series_tag}")
                 except Exception as e:
                     print(f"Error deleting old series {old_series_tag}: {e}")
         
@@ -1153,18 +1850,33 @@ class ProductionMainWindow:
                 mask = masks[idx]
                 binary_mask = mask.get("segmentation")
                 if binary_mask is None:
-                    print(f"Skipping mask {idx} - no segmentation data")
                     continue
                 
-                print(f"Processing mask {idx} with shape: {binary_mask.shape}")
+                # Rotate the mask if there's a rotation angle
+                if current_angle != 0:
+                    rotated_mask = self._rotate_mask(binary_mask, current_angle, orig_w, orig_h)
+                else:
+                    rotated_mask = binary_mask
                 
                 # Create overlay texture
                 overlay = np.zeros((h, w, 4), dtype=np.uint8)
                 color = colors[idx % len(colors)]
                 
-                # Apply mask with color
-                for channel in range(4):
-                    overlay[offset_y:offset_y + orig_h, offset_x:offset_x + orig_w, channel] = np.where(binary_mask == 1, color[channel], 0)
+                # Determine the correct dimensions to use for mask application
+                if current_angle != 0 and hasattr(self.crop_rotate_ui, 'rot_h') and hasattr(self.crop_rotate_ui, 'rot_w'):
+                    # Use rotated image dimensions
+                    mask_h = min(rotated_mask.shape[0], self.crop_rotate_ui.rot_h)
+                    mask_w = min(rotated_mask.shape[1], self.crop_rotate_ui.rot_w)
+                    
+                    # Apply rotated mask with color
+                    for channel in range(4):
+                        overlay[offset_y:offset_y + mask_h, offset_x:offset_x + mask_w, channel] = np.where(
+                            rotated_mask[:mask_h, :mask_w] == 1, color[channel], 0)
+                else:
+                    # Apply original mask with color (no rotation)
+                    for channel in range(4):
+                        overlay[offset_y:offset_y + orig_h, offset_x:offset_x + orig_w, channel] = np.where(
+                            rotated_mask == 1, color[channel], 0)
                 
                 # Convert to texture format
                 texture_data = overlay.flatten().astype(np.float32) / 255.0
@@ -1186,11 +1898,9 @@ class ProductionMainWindow:
                                     show=False)  # Start hidden
                 
                 successful_masks += 1
-                print(f"Successfully created mask overlay {idx} with texture {texture_tag}")
                 
             except Exception as e:
                 print(f"Error creating mask overlay {idx}: {e}")
-                import traceback
                 traceback.print_exc()
                 continue
         
@@ -1201,19 +1911,27 @@ class ProductionMainWindow:
             if dpg.does_item_exist(series_tag):
                 try:
                     dpg.configure_item(series_tag, show=False)
-                    print(f"Hid unused overlay {idx}")
                 except Exception as e:
                     print(f"Error hiding overlay {idx}: {e}")
         
-        # Show first mask if any were created successfully
+        # Show first mask if any were created successfully and masks should be visible
         if successful_masks > 0:
             try:
-                self.show_selected_mask(0)
-                print(f"Successfully processed {successful_masks} mask overlays")
+                # Only show masks if:
+                # 1. Masks are enabled
+                # 2. Crop mode is not active
+                # 3. Show mask overlay is enabled
+                masks_enabled = dpg.does_item_exist("mask_section_toggle") and dpg.get_value("mask_section_toggle")
+                crop_mode_active = dpg.does_item_exist("crop_mode") and dpg.get_value("crop_mode")
+                show_overlay = dpg.does_item_exist("show_mask_overlay") and dpg.get_value("show_mask_overlay")
+                
+                if masks_enabled and not crop_mode_active and show_overlay:
+                    self.show_selected_mask(0)
+                    print(f"Successfully processed {successful_masks} mask overlays and showing first mask")
+                else:
+                    print(f"Successfully processed {successful_masks} mask overlays but not showing (masks_enabled={masks_enabled}, crop_mode_active={crop_mode_active}, show_overlay={show_overlay})")
             except Exception as e:
                 print(f"Error showing selected mask: {e}")
-        else:
-            print("No mask overlays were processed")
     
     def show_selected_mask(self, selected_index):
         """Show only the selected mask and hide others"""
@@ -1333,26 +2051,24 @@ class ProductionMainWindow:
     
     def _show_segmentation_loading(self, message="Processing..."):
         """Show loading indicator for segmentation process"""
-        print(f"Attempting to show loading indicator with message: {message}")
         if dpg.does_item_exist("segmentation_loading_group"):
-            print("Loading group exists, showing indicator")
             # Update the message and show the indicator
             if dpg.does_item_exist("segmentation_loading_text"):
                 dpg.set_value("segmentation_loading_text", message)
-                print(f"Updated loading text to: {message}")
             dpg.configure_item("segmentation_loading_group", show=True)
-            print("Loading indicator should now be visible")
-        else:
-            print("Loading group does not exist!")
+        
+        # Update status text with the loading message
+        if dpg.does_item_exist("status_text"):
+            dpg.configure_item("status_text", default_value=f"{message}")
     
     def _hide_segmentation_loading(self):
         """Hide loading indicator for segmentation process"""
-        print("Attempting to hide loading indicator")
         if dpg.does_item_exist("segmentation_loading_group"):
             dpg.configure_item("segmentation_loading_group", show=False)
-            print("Loading indicator hidden")
-        else:
-            print("Loading group does not exist for hiding!")
+            
+        # Reset status text when loading is complete
+        if dpg.does_item_exist("status_text"):
+            dpg.configure_item("status_text", default_value="Ready")
     
     def toggle_box_selection_mode(self, sender, app_data):
         """Toggle the box selection mode on/off"""
@@ -1405,11 +2121,8 @@ class ProductionMainWindow:
             # Update axis limits to show the image properly
             self._update_axis_limits(initial=True)
             
-            print(f"✓ Created image series with texture {self.crop_rotate_ui.texture_tag}")
-            
         except Exception as e:
             print(f"Error creating image series: {e}")
-            import traceback
             traceback.print_exc()
 
     def _update_axis_limits(self, initial=False):
@@ -1467,10 +2180,75 @@ class ProductionMainWindow:
             dpg.set_axis_limits(self.x_axis_tag, x_min, x_max)
             dpg.set_axis_limits(self.y_axis_tag, y_min, y_max)
             
-            print(f"✓ Updated axis limits: x=[{x_min:.1f}, {x_max:.1f}], y=[{y_min:.1f}, {y_max:.1f}]")
-            
         except Exception as e:
             print(f"Error updating axis limits: {e}")
+    
+    def handle_resize(self):
+        """Handle window resize events."""
+        try:
+            # Get new viewport dimensions
+            viewport_width = dpg.get_viewport_client_width()
+            viewport_height = dpg.get_viewport_client_height()
+            
+            # Update layout dimensions
+            self.viewport_width = viewport_width
+            self.viewport_height = viewport_height
+            self.available_height = viewport_height - self.menu_bar_height
+            self.right_panel_width = int(viewport_width * 0.25)  # 25% for tools
+            self.central_panel_width = viewport_width - self.right_panel_width
+            
+            # Update main window size
+            if dpg.does_item_exist(self.window_tag):
+                dpg.configure_item(self.window_tag, width=viewport_width, height=viewport_height)
+            
+            # Update panel sizes
+            if dpg.does_item_exist(self.central_panel_tag):
+                dpg.configure_item(self.central_panel_tag, 
+                                 width=self.central_panel_width, 
+                                 height=self.available_height)
+            
+            if dpg.does_item_exist(self.right_panel_tag):
+                dpg.configure_item(self.right_panel_tag,
+                                 width=self.right_panel_width,
+                                 height=self.available_height)
+            
+            # Update image plot size
+            if dpg.does_item_exist(self.image_plot_tag):
+                margin = 20
+                plot_width = max(self.central_panel_width - (2 * margin), 200)
+                plot_height = max(self.available_height - (2 * margin), 200)
+                
+                dpg.configure_item(self.image_plot_tag, width=plot_width, height=plot_height)
+                
+                # Update drawlist size if it exists
+                if dpg.does_item_exist(self.draw_list_tag):
+                    dpg.configure_item(self.draw_list_tag, width=plot_width, height=plot_height)
+            
+            # Update tool panel curves if available
+            if (self.tool_panel and 
+                hasattr(self.tool_panel, 'curves_panel') and 
+                self.tool_panel.curves_panel and
+                hasattr(self.tool_panel.curves_panel, 'resize_plot')):
+                self.tool_panel.curves_panel.resize_plot()
+            
+            # Update crop rotate UI if available
+            if self.crop_rotate_ui:
+                # Update the crop UI's panel reference and recalculate axis limits
+                self.crop_rotate_ui.panel_id = self.central_panel_tag
+                if hasattr(self.crop_rotate_ui, 'update_axis_limits'):
+                    self.crop_rotate_ui.update_axis_limits()
+                
+                # Force update the image display
+                if hasattr(self.crop_rotate_ui, 'update_image'):
+                    self.crop_rotate_ui.update_image(None, None, None)
+            
+            # Update main window axis limits
+            if hasattr(self, '_update_axis_limits'):
+                self._update_axis_limits(initial=True)
+            
+        except Exception as e:
+            print(f"Error handling resize: {e}")
+            traceback.print_exc()
     
     def cleanup(self):
         """Cleanup application resources."""

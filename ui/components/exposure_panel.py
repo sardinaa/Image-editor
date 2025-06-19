@@ -21,6 +21,7 @@ class ExposurePanel(BasePanel):
             'illumination': 0.0,
             'contrast': 1.0,
             'shadow': 0,
+            'highlights': 0,
             'whites': 0,
             'blacks': 0
         }
@@ -42,8 +43,8 @@ class ExposurePanel(BasePanel):
             label="Illumination",
             tag="illumination",
             default=0.0,
-            min_val=-50.0,
-            max_val=50.0
+            min_val=-100.0,
+            max_val=100.0
         )
         
         self._create_slider_float(
@@ -62,6 +63,14 @@ class ExposurePanel(BasePanel):
         self._create_slider_int(
             label="Shadow",
             tag="shadow",
+            default=0,
+            min_val=-100,
+            max_val=100
+        )
+        
+        self._create_slider_int(
+            label="Highlights",
+            tag="highlights",
             default=0,
             min_val=-100,
             max_val=100
@@ -92,6 +101,7 @@ class ExposurePanel(BasePanel):
             'illumination': UIStateManager.safe_get_value("illumination", 0.0),
             'contrast': UIStateManager.safe_get_value("contrast", 1.0),
             'shadow': UIStateManager.safe_get_value("shadow", 0),
+            'highlights': UIStateManager.safe_get_value("highlights", 0),
             'whites': UIStateManager.safe_get_value("whites", 0),
             'blacks': UIStateManager.safe_get_value("blacks", 0)
         }

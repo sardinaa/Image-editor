@@ -494,6 +494,7 @@ class ApplicationService:
         processor.illumination = params.get('illumination', 0.0)
         processor.contrast = params.get('contrast', 1.0)
         processor.shadow = params.get('shadow', 0)
+        processor.highlights = params.get('highlights', 0)
         processor.whites = params.get('whites', 0)
         processor.blacks = params.get('blacks', 0)
         processor.saturation = params.get('saturation', 1.0)
