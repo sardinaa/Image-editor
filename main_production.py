@@ -52,6 +52,9 @@ class ProductionImageEditor:
         self.main_window = ProductionMainWindow(self.app_service)
         self.main_window.setup()
         
+        # Important: Set main window reference on app service for EventHandlers
+        self.app_service.main_window = self.main_window
+        
         # Setup file dialogs
         self._setup_file_dialogs()
         
@@ -83,9 +86,9 @@ class ProductionImageEditor:
             width=700,
             height=400
         ):
+            dpg.add_file_extension(".png")
             dpg.add_file_extension(".jpg")
             dpg.add_file_extension(".jpeg")
-            dpg.add_file_extension(".png")
             dpg.add_file_extension(".bmp")
             dpg.add_file_extension(".tiff")
             dpg.add_file_extension(".tif")
@@ -214,6 +217,15 @@ class ProductionImageEditor:
             
             # Show viewport and start main loop
             dpg.show_viewport()
+            # Trigger initial resize
+            if self.main_window:
+                self.main_window.handle_resize()
+                
+                # Additional resize for tool panel components
+                if (hasattr(self.main_window, 'tool_panel') and 
+                    self.main_window.tool_panel and 
+                    hasattr(self.main_window.tool_panel, 'handle_resize')):
+                    self.main_window.tool_panel.handle_resize()
             dpg.start_dearpygui()
             
         except KeyboardInterrupt:

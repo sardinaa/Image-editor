@@ -4,7 +4,7 @@ import numpy as np
 import cv2
 
 class HistogramPanel:
-    def __init__(self):
+    def __init__(self, width=None):
         self.plot_tag = "histogram_plot"
         self.x_axis_tag = "histogram_x_axis"
         self.y_axis_tag = "histogram_y_axis"
@@ -15,9 +15,9 @@ class HistogramPanel:
         self.blue_series_tag = "histogram_blue_series"
         self.luminance_series_tag = "histogram_luminance_series"
         
-        # Plot dimensions
-        self.plot_width = 250  # Fixed width to match tool panel
-        self.plot_height = 150  # Compact height
+        # Plot dimensions - dynamic width to use available space
+        self.plot_width = width if width is not None else 220  # Default fallback
+        self.plot_height = 120  # Keep height reasonable
         
         # Current display mode
         self.show_rgb = True
@@ -114,6 +114,14 @@ class HistogramPanel:
         
         return hist_r, hist_g, hist_b, hist_lum
     
+    def set_width(self, width):
+        """Update the histogram plot width."""
+        self.plot_width = width
+        # Update the plot width if it exists - leave small right margin
+        if dpg.does_item_exist(self.plot_tag):
+            plot_width = width - 10 if width > 0 else - 10  # Leave 15px right margin
+            dpg.configure_item(self.plot_tag, width=plot_width)
+    
     def create_panel(self):
         """Create the histogram panel"""
         with dpg.group():
@@ -126,8 +134,9 @@ class HistogramPanel:
                 dpg.add_checkbox(label="Lum", tag="histogram_show_luminance", 
                                default_value=False, callback=self.toggle_display_mode)
             
-            # Histogram plot
-            with dpg.plot(tag=self.plot_tag, height=self.plot_height, width=self.plot_width,
+            # Histogram plot - use available width with small right margin
+            plot_width = self.plot_width - 5 if self.plot_width > 0 else -5  # Leave 15px right margin
+            with dpg.plot(tag=self.plot_tag, height=self.plot_height, width=plot_width,
                          no_mouse_pos=True, no_box_select=True) as plot:
                 # Add axes
                 dpg.add_plot_axis(dpg.mvXAxis, label="", tag=self.x_axis_tag, no_gridlines=True, no_tick_labels=True)

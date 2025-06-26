@@ -155,6 +155,8 @@ class BoundingBoxRenderer:
     
     def screen_to_texture_coords(self, screen_x: float, screen_y: float) -> Tuple[float, float]:
         """Convert screen coordinates to texture coordinates."""
+        print(f"COORD CONVERSION: Screen ({screen_x:.1f}, {screen_y:.1f})")
+        
         # First try to get plot mouse position (if we're in a plot)
         try:
             if dpg.does_item_exist("image_plot"):
@@ -164,18 +166,25 @@ class BoundingBoxRenderer:
                     # We need to convert to image coordinate system (Y increases downward)
                     texture_x = plot_pos[0]
                     texture_y = self.texture_height - plot_pos[1]  # Invert Y coordinate
+                    print(f"COORD CONVERSION: Using plot coords - Plot: ({plot_pos[0]:.1f}, {plot_pos[1]:.1f}) -> Texture: ({texture_x:.1f}, {texture_y:.1f})")
                     return texture_x, texture_y
+                else:
+                    print("COORD CONVERSION: plot_pos is None")
+            else:
+                print("COORD CONVERSION: image_plot does not exist")
         except Exception as e:
-            pass  # Fall back to panel-based conversion
+            print(f"COORD CONVERSION: Plot conversion failed: {e}")
         
         # Fallback to panel-based conversion if plot coordinates aren't available
         if not dpg.does_item_exist(self.panel_id):
+            print(f"COORD CONVERSION: Panel {self.panel_id} does not exist, returning screen coords")
             return screen_x, screen_y
         
         panel_pos = dpg.get_item_pos(self.panel_id)
         panel_size = dpg.get_item_rect_size(self.panel_id)
         
         if panel_size[0] <= 0 or panel_size[1] <= 0:
+            print(f"COORD CONVERSION: Invalid panel size {panel_size}, returning screen coords")
             return screen_x, screen_y
         
         # Convert to normalized coordinates (0-1)
@@ -185,6 +194,9 @@ class BoundingBoxRenderer:
         # Convert to texture coordinates
         texture_x = rel_x * self.texture_width
         texture_y = rel_y * self.texture_height
+        
+        print(f"COORD CONVERSION: Panel-based - Panel pos: {panel_pos}, size: {panel_size}")
+        print(f"COORD CONVERSION: Relative: ({rel_x:.3f}, {rel_y:.3f}) -> Texture: ({texture_x:.1f}, {texture_y:.1f})")
         
         return texture_x, texture_y
     
@@ -219,6 +231,9 @@ class BoundingBoxRenderer:
         
         box = self.bounding_box
         
+        print(f"HIT TEST: Mouse at ({x:.1f}, {y:.1f}), Box: ({box.x:.1f}, {box.y:.1f}) {box.width:.1f}x{box.height:.1f}")
+        print(f"HIT TEST: Handle threshold: {self.handle_threshold}")
+        
         # Test handles in texture/image coordinate system directly
         handle_positions = {
             HandleType.TOP_LEFT: (box.x, box.y),
@@ -231,155 +246,27 @@ class BoundingBoxRenderer:
             HandleType.RIGHT: (box.x + box.width, box.y + box.height / 2)
         }
         
+        closest_handle = None
+        closest_distance = float('inf')
+        
         for handle_type, (hx, hy) in handle_positions.items():
             # Use Euclidean distance for better circular hit detection
             distance = ((x - hx) ** 2 + (y - hy) ** 2) ** 0.5
+            print(f"  {handle_type.value}: pos=({hx:.1f}, {hy:.1f}), distance={distance:.1f}")
+            
             if distance <= self.handle_threshold:
-                return handle_type
+                if distance < closest_distance:
+                    closest_distance = distance
+                    closest_handle = handle_type
         
-        return None
+        if closest_handle:
+            print(f"HIT TEST: Found handle {closest_handle.value} at distance {closest_distance:.1f}")
+        else:
+            print("HIT TEST: No handle hit")
+        
+        return closest_handle
     
-    def on_mouse_down(self, sender, app_data) -> bool:
-        """Handle mouse down events. Returns True if event was handled."""
-        mouse_pos = dpg.get_mouse_pos()
-        texture_x, texture_y = self.screen_to_texture_coords(mouse_pos[0], mouse_pos[1])
-        
-        print(f"BoundingBoxRenderer: Mouse down at {texture_x}, {texture_y}")
-        
-        # If no bounding box exists, start creating a new one
-        if not self.bounding_box:
-            # Create a new bounding box starting from this point
-            self.bounding_box = BoundingBox(texture_x, texture_y, 10, 10)  # Start with a small default size
-            self.is_dragging = True
-            self.drag_mode = DragMode.RESIZE
-            self.drag_handle = HandleType.BOTTOM_RIGHT  # Growing from top-left
-            self.drag_start_mouse = (texture_x, texture_y)
-            self.drag_start_box = self.bounding_box.copy()
-            
-            print(f"Created new bounding box at {texture_x}, {texture_y}")
-            
-            if self.on_start_drag_callback:
-                self.on_start_drag_callback(self.bounding_box.copy())
-            return True
-        
-        # Check if Control key is pressed for move mode
-        is_ctrl_pressed = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
-        
-        # Check for handle hits first (only for resize mode)
-        if not is_ctrl_pressed:
-            hit_handle = self.hit_test_handles(texture_x, texture_y)
-            if hit_handle:
-                self.is_dragging = True
-                self.drag_mode = DragMode.RESIZE
-                self.drag_handle = hit_handle
-                self.drag_start_mouse = (texture_x, texture_y)
-                self.drag_start_box = self.bounding_box.copy()
-                
-                if self.on_start_drag_callback:
-                    self.on_start_drag_callback(self.bounding_box.copy())
-                return True
-        
-        # Check if clicking inside the box
-        if self.bounding_box.contains_point(texture_x, texture_y):
-            self.is_dragging = True
-            
-            if is_ctrl_pressed:
-                # Control + click = move mode
-                self.drag_mode = DragMode.MOVE
-                self.drag_offset = (texture_x - self.bounding_box.x, texture_y - self.bounding_box.y)
-            else:
-                # Regular click = resize mode (drag the nearest edge/corner)
-                self.drag_mode = DragMode.RESIZE
-                self.drag_handle = self._get_nearest_handle(texture_x, texture_y)
-                self.drag_start_mouse = (texture_x, texture_y)
-            
-            self.drag_start_box = self.bounding_box.copy()
-            
-            if self.on_start_drag_callback:
-                self.on_start_drag_callback(self.bounding_box.copy())
-            return True
-        
-        return False
-    
-    def on_mouse_drag(self, sender, app_data) -> bool:
-        """Handle mouse drag events. Returns True if event was handled."""
-        if not self.is_dragging or not self.bounding_box or not self.drag_start_box:
-            # print(f"Drag ignored - is_dragging: {self.is_dragging}, box: {self.bounding_box is not None}, start_box: {self.drag_start_box is not None}")
-            return False
-        
-        # Additional safety check: ensure left mouse button is still pressed
-        # This prevents accidental modifications if mouse events arrive after release
-        if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
-            # Force end the drag if mouse button is not pressed
-            print("Mouse button released during drag - ending drag")
-            self.is_dragging = False
-            self.drag_mode = DragMode.NONE
-            self.drag_handle = None
-            self.drag_start_box = None
-            return False
-        
-        mouse_pos = dpg.get_mouse_pos()
-        texture_x, texture_y = self.screen_to_texture_coords(mouse_pos[0], mouse_pos[1])
-        
-        if self.drag_mode == DragMode.MOVE:
-            # Move the entire box
-            new_x = texture_x - self.drag_offset[0]
-            new_y = texture_y - self.drag_offset[1]
-            
-            self.bounding_box.x = new_x
-            self.bounding_box.y = new_y
-            
-            # Clamp to bounds if set
-            if self.bounds:
-                self.bounding_box.clamp_to_bounds(self.bounds)
-        
-        elif self.drag_mode == DragMode.RESIZE:
-            # Resize based on the handle being dragged
-            self._resize_box(self.drag_handle, texture_x, texture_y)
-        
-        # Call change callback during drag for real-time visual feedback
-        if self.on_change_callback:
-            self.on_change_callback(self.bounding_box.copy())
-        
-        return True
-    
-    def on_mouse_release(self, sender, app_data) -> bool:
-        """Handle mouse release events. Returns True if event was handled."""
-        if not self.is_dragging:
-            return False
-        
-        was_dragging = self.is_dragging
-        drag_mode = self.drag_mode
-        
-        self.is_dragging = False
-        self.drag_mode = DragMode.NONE
-        self.drag_handle = None
-        self.drag_start_box = None
-        
-        if was_dragging and self.bounding_box:
-            # Ensure the bounding box has valid dimensions
-            # Normalize negative width/height
-            if self.bounding_box.width < 0:
-                self.bounding_box.x += self.bounding_box.width
-                self.bounding_box.width = abs(self.bounding_box.width)
-            
-            if self.bounding_box.height < 0:
-                self.bounding_box.y += self.bounding_box.height
-                self.bounding_box.height = abs(self.bounding_box.height)
-            
-            # Enforce minimum dimensions
-            if self.bounding_box.width < 5:
-                self.bounding_box.width = 5
-            
-            if self.bounding_box.height < 5:
-                self.bounding_box.height = 5
-            
-            # Call end drag callback only if dimensions are meaningful
-            if self.on_end_drag_callback and self.bounding_box.width > 0 and self.bounding_box.height > 0:
-                print(f"BoundingBoxRenderer: End drag with box {self.bounding_box.x},{self.bounding_box.y},{self.bounding_box.width}x{self.bounding_box.height}")
-                self.on_end_drag_callback(self.bounding_box.copy())
-        
-        return was_dragging
+
     
     def _resize_box(self, handle: HandleType, current_x: float, current_y: float) -> None:
         """Resize the bounding box based on handle and current mouse position."""
@@ -608,23 +495,3 @@ class BoundingBoxManager:
             return self.renderers[self.active_renderer]
         return None
     
-    def on_mouse_down(self, sender, app_data) -> bool:
-        """Forward mouse down to active renderer."""
-        renderer = self.get_active_renderer()
-        if renderer:
-            return renderer.on_mouse_down(sender, app_data)
-        return False
-    
-    def on_mouse_drag(self, sender, app_data) -> bool:
-        """Forward mouse drag to active renderer."""
-        renderer = self.get_active_renderer()
-        if renderer:
-            return renderer.on_mouse_drag(sender, app_data)
-        return False
-    
-    def on_mouse_release(self, sender, app_data) -> bool:
-        """Forward mouse release to active renderer."""
-        renderer = self.get_active_renderer()
-        if renderer:
-            return renderer.on_mouse_release(sender, app_data)
-        return False

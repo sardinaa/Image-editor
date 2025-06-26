@@ -39,11 +39,14 @@ class BasePanel:
     
     def _param_changed(self, sender, app_data, user_data):
         """Handle parameter change. Can be overridden."""
+        # Check if callbacks are enabled on this panel
+        if hasattr(self, '_callbacks_enabled') and not self._callbacks_enabled:
+            return
+            
         # Check if callbacks are enabled in main window
         if (self.main_window and 
             hasattr(self.main_window, '_callbacks_enabled') and 
             not self.main_window._callbacks_enabled):
-            print(f"🔇 Parameter change ignored: callbacks disabled ({sender})")
             return
             
         if self.callback:

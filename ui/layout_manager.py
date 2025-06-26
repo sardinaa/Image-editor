@@ -12,20 +12,33 @@ class LayoutManager:
     def __init__(self, main_window):
         self.main_window = main_window
         self.layout_config = {
-            'tool_panel_ratio': 0.25,  # 25% of width for tools
+            'tool_panel_ratio': 0.25,  # 19% of width for tools (reduced to prevent horizontal scrolling)
             'menu_bar_height': 30,
+            'status_bar_height': 35,   # Height for status bar
             'plot_margin': 5,
-            'min_plot_size': 200
+            'min_plot_size': 200,
+            'border_padding': 10  # Account for borders, spacing, and scrollbars
         }
     
     def get_layout_dimensions(self) -> Dict[str, int]:
         """Calculate layout dimensions based on viewport size."""
-        viewport_width = dpg.get_viewport_client_width()
-        viewport_height = dpg.get_viewport_client_height()
+        try:
+            viewport_width = dpg.get_viewport_client_width()
+            viewport_height = dpg.get_viewport_client_height()
+        except (SystemError, RuntimeError):
+            # Viewport not created yet, use default dimensions
+            viewport_width = 1400
+            viewport_height = 900
         
-        available_height = viewport_height - self.layout_config['menu_bar_height']
-        tool_panel_width = int(viewport_width * self.layout_config['tool_panel_ratio'])
-        central_panel_width = viewport_width - tool_panel_width
+        available_height = viewport_height - self.layout_config['menu_bar_height'] - self.layout_config['status_bar_height'] - 10
+        
+        # Calculate available width for panels (account for border padding)
+        border_padding = self.layout_config['border_padding']
+        available_width = viewport_width - (border_padding * 2)  # Total padding for both panels
+        
+        # Calculate panel widths from available width to prevent horizontal scrolling
+        tool_panel_width = int(available_width * self.layout_config['tool_panel_ratio'])
+        central_panel_width = available_width - tool_panel_width
         
         return {
             'viewport_width': viewport_width,
@@ -40,7 +53,7 @@ class LayoutManager:
         dims = self.get_layout_dimensions()
         
         with dpg.window(
-            label="Photo Editor", 
+            label="Photo Editor - Production", 
             tag=self.main_window.window_tag,
             width=dims['viewport_width'], 
             height=dims['viewport_height'],
@@ -56,22 +69,38 @@ class LayoutManager:
                 self._create_central_panel(dims)
                 # Tool Panel
                 self._create_tool_panel(dims)
+            
+            # Add status bar at the bottom
+            self._create_status_bar()
+    
+    def _create_status_bar(self):
+        """Create the status bar at the bottom of the window."""
+        with dpg.child_window(
+            height=self.layout_config['status_bar_height'],
+            width=-1,
+            border=True,
+            no_scrollbar=True,
+            no_scroll_with_mouse=True
+        ):
+            with dpg.group(horizontal=True):
+                dpg.add_spacer(width=10)
+                dpg.add_text("Ready", tag="status_text")
+                dpg.add_spacer(width=20)
+                dpg.add_text("", tag="status_info")
+                dpg.add_spacer(width=10)
     
     def _create_menu_bar(self):
         """Create the application menu bar."""
         with dpg.menu_bar():
             with dpg.menu(label="File"):
-                dpg.add_menu_item(label="Load", callback=self.main_window.load_callback)
-                dpg.add_menu_item(label="Save", callback=self.main_window.save_callback)
+                dpg.add_menu_item(label="Open Image", callback=self.main_window._open_image)
+                dpg.add_menu_item(label="Export Image", callback=self.main_window._export_image)
+                dpg.add_separator()
                 dpg.add_menu_item(label="Exit", callback=lambda: dpg.stop_dearpygui())
             
             with dpg.menu(label="Edit"):
-                dpg.add_menu_item(label="Undo", callback=lambda: print("Undo"))
-                dpg.add_menu_item(label="Redo", callback=lambda: print("Redo"))
-            
-            with dpg.menu(label="View"):
-                dpg.add_menu_item(label="Reset View", callback=self._reset_view)
-                dpg.add_menu_item(label="Fit to Window", callback=self._fit_to_window)
+                dpg.add_menu_item(label="Reset All", callback=self.main_window._reset_all_processing)
+                dpg.add_menu_item(label="Clear Masks", callback=self.main_window._clear_all_masks)
     
     def _create_central_panel(self, dims: Dict[str, int]):
         """Create the central image display panel."""
@@ -79,40 +108,17 @@ class LayoutManager:
             tag=self.main_window.central_panel_tag,
             width=dims['central_panel_width'],
             height=dims['available_height'],
-            border=False,
-            no_scrollbar=True
+            border=False
         ):
-            pass  # Content will be added dynamically
+            self._create_image_plot(dims)
     
-    def _create_tool_panel(self, dims: Dict[str, int]):
-        """Create the tool panel."""
-        with dpg.child_window(
-            tag=self.main_window.right_panel_tag,
-            width=dims['tool_panel_width'],
-            height=dims['available_height'],
-            no_scrollbar=True,
-            horizontal_scrollbar=False
-        ):
-            if hasattr(self.main_window, 'tool_panel') and self.main_window.tool_panel:
-                self.main_window.tool_panel.draw()
-    
-    def create_image_plot(self) -> Tuple[int, int]:
-        """Create the central image plot and return its dimensions."""
-        if not hasattr(self.main_window, 'crop_rotate_ui') or not self.main_window.crop_rotate_ui:
-            return 0, 0
+    def _create_image_plot(self, dims: Dict[str, int]):
+        """Create the main image display plot."""
+        # Calculate plot dimensions with reduced margin to save space
+        margin = 0  # Reduced from 20 to save space
+        plot_width = dims['central_panel_width'] - (2 * margin)
+        plot_height = dims['available_height'] - (2 * margin)
         
-        dims = self.get_layout_dimensions()
-        
-        # Calculate plot dimensions
-        margin = self.layout_config['plot_margin']
-        plot_width = max(dims['central_panel_width'] - margin, self.layout_config['min_plot_size'])
-        plot_height = max(dims['available_height'] - margin, self.layout_config['min_plot_size'])
-        
-        # Clear existing content
-        if dpg.does_item_exist(self.main_window.central_panel_tag):
-            dpg.delete_item(self.main_window.central_panel_tag, children_only=True)
-        
-        # Create plot container
         with dpg.child_window(
             parent=self.main_window.central_panel_tag,
             width=-1,
@@ -121,33 +127,61 @@ class LayoutManager:
             no_scrollbar=True
         ):
             with dpg.plot(
-                label="Image Plot",
-                no_mouse_pos=False,
+                label="Image Display",
+                tag=self.main_window.image_plot_tag,
                 height=plot_height,
                 width=plot_width,
                 anti_aliased=True,
                 pan_button=dpg.mvMouseButton_Left,
                 fit_button=dpg.mvMouseButton_Middle,
-                track_offset=True,
-                tag="image_plot"
+                no_mouse_pos=False,
+                track_offset=True
             ):
-                dpg.add_plot_axis(dpg.mvXAxis, label="X", no_gridlines=True, tag="x_axis")
-                dpg.add_plot_axis(dpg.mvYAxis, label="Y", no_gridlines=True, tag="y_axis")
+                dpg.add_plot_axis(dpg.mvXAxis, label="X", no_gridlines=True, tag=self.main_window.x_axis_tag)
+                dpg.add_plot_axis(dpg.mvYAxis, label="Y", no_gridlines=True, tag=self.main_window.y_axis_tag)
                 
-                # Add image series
-                y_axis = dpg.last_item()
-                dpg.add_image_series(
-                    self.main_window.crop_rotate_ui.texture_tag,
-                    bounds_min=[0, 0],
-                    bounds_max=[
-                        self.main_window.crop_rotate_ui.texture_w,
-                        self.main_window.crop_rotate_ui.texture_h
-                    ],
-                    parent=y_axis,
-                    tag="central_image"
-                )
-        
-        return plot_width, plot_height
+                # Add placeholder for image series
+                # Will be populated when image is loaded
+    
+    def _create_tool_panel(self, dims: Dict[str, int]):
+        """Create the tool panel."""
+        with dpg.child_window(
+            tag=self.main_window.right_panel_tag,
+            width=dims['tool_panel_width'],
+            height=dims['available_height'],
+            border=True
+        ):
+            print("🛠️  Creating tool panel...")
+            
+            # Create modular tool panel using service layer
+            from ui.tool_panel_modular import ModularToolPanel
+            self.main_window.tool_panel = ModularToolPanel(
+                update_callback=self.main_window._on_parameter_change,
+                app_service=self.main_window.app_service,
+                main_window=self.main_window
+            )
+            
+            self.main_window.tool_panel.setup()
+            
+            # Draw the tool panel UI
+            if hasattr(self.main_window.tool_panel, 'draw'):
+                self.main_window.tool_panel.draw()
+            else:
+                # Fallback: create simple tool panel UI
+                dpg.add_text("Tool Panel")
+                dpg.add_separator()
+                dpg.add_text("Image Editor Tools")
+                dpg.add_button(label="Load Image", callback=self.main_window._open_image)
+                dpg.add_button(label="Save Image", callback=self.main_window._save_image)
+                
+            print("✅ Tool panel created")
+    
+    def create_image_plot(self) -> Tuple[int, int]:
+        """Create the central image plot and return its dimensions. (Legacy method for compatibility)"""
+        # This method is now handled by _create_image_plot during layout setup
+        # Kept for backward compatibility if still called elsewhere
+        dims = self.get_layout_dimensions()
+        return dims['central_panel_width'] - 40, dims['available_height'] - 40
     
     def handle_resize(self):
         """Handle window resize events."""
@@ -186,9 +220,18 @@ class LayoutManager:
         
         # Update crop rotate UI
         if hasattr(self.main_window, 'crop_rotate_ui') and self.main_window.crop_rotate_ui:
-            self.main_window.crop_rotate_ui.update_image(None, None, None)
-            if hasattr(self.main_window, 'update_axis_limits'):
-                self.main_window.update_axis_limits(initial=True)
+            # Update the crop UI's panel reference and recalculate axis limits
+            self.main_window.crop_rotate_ui.panel_id = self.main_window.central_panel_tag
+            if hasattr(self.main_window.crop_rotate_ui, 'update_axis_limits'):
+                self.main_window.crop_rotate_ui.update_axis_limits()
+                
+            # Force update the image display
+            if hasattr(self.main_window.crop_rotate_ui, 'update_image'):
+                self.main_window.crop_rotate_ui.update_image(None, None, None)
+        
+        # Update main window axis limits using DisplayService
+        if hasattr(self.main_window, '_update_axis_limits'):
+            self.main_window._update_axis_limits(initial=True)
     
     def _reset_view(self):
         """Reset the view to show the entire image."""

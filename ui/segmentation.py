@@ -279,12 +279,34 @@ class ImageSegmenter:
                 int(box[3] * scale_h)
             ]
             
+            # Validate scaled box coordinates
+            print(f"Scaled box coordinates: {scaled_box}")
+            for i, coord in enumerate(scaled_box):
+                if not isinstance(coord, (int, float)) or not np.isfinite(coord):
+                    raise ValueError(f"Invalid scaled box coordinate {i}: {coord}")
+            
+            # Ensure box coordinates are within image bounds
+            scaled_box[0] = max(0, min(scaled_box[0], resize_w - 1))  # x1
+            scaled_box[1] = max(0, min(scaled_box[1], resize_h - 1))  # y1
+            scaled_box[2] = max(0, min(scaled_box[2], resize_w))      # x2
+            scaled_box[3] = max(0, min(scaled_box[3], resize_h))      # y2
+            
+            # Ensure valid box dimensions
+            if scaled_box[2] <= scaled_box[0] or scaled_box[3] <= scaled_box[1]:
+                raise ValueError(f"Invalid box dimensions: {scaled_box}")
+            
+            print(f"Final validated scaled box: {scaled_box}")
+            
             # Set the image embedding in the predictor
             self.predictor.set_image(resized_image)
             
+            # Convert to numpy array with explicit dtype
+            box_array = np.array(scaled_box, dtype=np.int32)
+            print(f"Box array for prediction: {box_array}, dtype: {box_array.dtype}")
+            
             # Get the mask prediction for the given box
             masks, scores, logits = self.predictor.predict(
-                box=np.array(scaled_box),
+                box=box_array,
                 multimask_output=True
             )
             
@@ -363,6 +385,19 @@ class ImageSegmenter:
             int(box[3] * scale_h)
         ]
         
+        # Validate and clamp coordinates
+        scaled_box[0] = max(0, min(scaled_box[0], new_width - 1))   # x1
+        scaled_box[1] = max(0, min(scaled_box[1], new_height - 1))  # y1
+        scaled_box[2] = max(0, min(scaled_box[2], new_width))       # x2
+        scaled_box[3] = max(0, min(scaled_box[3], new_height))      # y2
+        
+        # Ensure valid box dimensions
+        if scaled_box[2] <= scaled_box[0] or scaled_box[3] <= scaled_box[1]:
+            print(f"Invalid fallback box dimensions: {scaled_box}")
+            return []
+        
+        print(f"Fallback scaled box: {scaled_box}")
+        
         try:
             # If still on CUDA and failing, try moving to CPU
             if self.device == "cuda":
@@ -371,8 +406,12 @@ class ImageSegmenter:
                 self.predictor = SamPredictor(self.model)
                 
             self.predictor.set_image(resized_image)
+            
+            # Convert to numpy array with explicit dtype
+            box_array = np.array(scaled_box, dtype=np.int32)
+            
             masks, scores, logits = self.predictor.predict(
-                box=np.array(scaled_box),
+                box=box_array,
                 multimask_output=True
             )
             

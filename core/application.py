@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 from pathlib import Path
 import dearpygui.dearpygui as dpg
+import cv2
 
 # Import utilities
 from utils.memory_utils import MemoryManager, ErrorHandler, ResourceManager
@@ -230,14 +231,32 @@ class SegmentationService:
         self.pending_selection = None
     
     def get_segmenter(self):
-        """Get or create segmenter instance."""
+        """Get or create segmenter instance with memory-efficient approach."""
         if self.segmenter is None:
             try:
                 # Import here to avoid circular dependencies
                 from ui.segmentation import ImageSegmenter
                 
                 print("Creating ImageSegmenter instance...")
-                device = MemoryManager.select_optimal_device()
+                
+                # Check available memory first
+                memory_info = MemoryManager.get_device_info()
+                print(f"Available memory: {memory_info}")
+                
+                # Select device based on memory requirements
+                # SAM model requires about 4GB of GPU memory
+                device = MemoryManager.select_optimal_device(min_gpu_memory_gb=4.0)
+                
+                # If GPU doesn't have enough memory, force CPU mode
+                if device == "cuda" and memory_info['free_mb'] < 3000:  # 3GB threshold
+                    print(f"GPU has only {memory_info['free_mb']:.1f}MB free, forcing CPU mode")
+                    device = "cpu"
+                
+                print(f"Selected device: {device}")
+                
+                # Clear memory before creating segmenter
+                MemoryManager.clear_cuda_cache()
+                
                 self.segmenter = ImageSegmenter(device=device)
                 
                 # Register with resource manager
@@ -248,10 +267,20 @@ class SegmentationService:
                 )
                 
                 print(f"ImageSegmenter instance created successfully on {device}")
+                
             except Exception as e:
                 error_msg = ErrorHandler.handle_memory_error(e, "segmenter creation")
                 print(error_msg)
-                return None
+                
+                # Try fallback to CPU if GPU failed
+                try:
+                    print("Attempting CPU fallback for segmenter...")
+                    MemoryManager.clear_cuda_cache()
+                    self.segmenter = ImageSegmenter(device="cpu")
+                    print("ImageSegmenter created successfully on CPU as fallback")
+                except Exception as cpu_e:
+                    print(f"CPU fallback also failed: {cpu_e}")
+                    return None
         
         return self.segmenter
     
@@ -340,6 +369,178 @@ class SegmentationService:
     def get_pending_selection(self) -> Optional[Dict[str, Any]]:
         """Get pending segmentation selection."""
         return self.pending_selection
+    
+    def validate_segmentation_requirements(self, crop_rotate_ui=None) -> bool:
+        """Validate that segmentation requirements are met."""
+        if not crop_rotate_ui or not hasattr(crop_rotate_ui, "original_image"):
+            print("No image available for segmentation.")
+            return False
+            
+        return True
+    
+    def transform_texture_coordinates_to_image(self, box, crop_rotate_ui):
+        """Transform texture coordinates to image coordinates."""
+        try:
+            if not crop_rotate_ui or crop_rotate_ui.original_image is None:
+                print("DEBUG: transform_texture_coordinates_to_image - No crop_rotate_ui or original_image")
+                return None
+                
+            image = crop_rotate_ui.original_image
+            h, w = image.shape[:2]
+            
+            # Calculate the texture offsets where the image is centered within the texture
+            texture_w = crop_rotate_ui.texture_w
+            texture_h = crop_rotate_ui.texture_h
+            offset_x = (texture_w - w) // 2
+            offset_y = (texture_h - h) // 2
+            
+            print(f"DEBUG: Image dimensions: {w}x{h}, Texture: {texture_w}x{texture_h}, Offsets: ({offset_x}, {offset_y})")
+            print(f"DEBUG: Input box: {box}, types: {[type(x) for x in box]}")
+            
+            # Convert all box coordinates to Python scalars first
+            box_scalars = []
+            for i, coord in enumerate(box):
+                try:
+                    if hasattr(coord, 'item'):  # numpy scalar
+                        scalar_val = coord.item()
+                    else:
+                        scalar_val = float(coord)
+                    box_scalars.append(scalar_val)
+                    print(f"DEBUG: Converted box[{i}]: {coord} -> {scalar_val}")
+                except Exception as e:
+                    print(f"DEBUG: Error converting box[{i}] = {coord}: {e}")
+                    return None
+            
+            # Convert box coordinates from texture space to image space
+            x1 = max(0, min(w-1, int(box_scalars[0] - offset_x)))
+            y1 = max(0, min(h-1, int(box_scalars[1] - offset_y)))
+            x2 = max(0, min(w-1, int(box_scalars[2] - offset_x)))
+            y2 = max(0, min(h-1, int(box_scalars[3] - offset_y)))
+            
+            scaled_box = [x1, y1, x2, y2]
+            print(f"DEBUG: Computed scaled_box: {scaled_box}")
+            
+            # Ensure all coordinates are integers (not numpy types)
+            scaled_box = [int(coord) for coord in scaled_box]
+            print(f"DEBUG: Final integer scaled_box: {scaled_box}")
+            
+            # Validate box dimensions
+            if scaled_box[2] <= scaled_box[0] or scaled_box[3] <= scaled_box[1]:
+                print(f"DEBUG: Invalid box dimensions after transformation: {scaled_box}")
+                # Try to create a minimal valid box
+                center_x = (scaled_box[0] + scaled_box[2]) // 2
+                center_y = (scaled_box[1] + scaled_box[3]) // 2
+                min_size = 10
+                scaled_box = [
+                    max(0, center_x - min_size//2),
+                    max(0, center_y - min_size//2),
+                    min(w, center_x + min_size//2),
+                    min(h, center_y + min_size//2)
+                ]
+                print(f"DEBUG: Created minimal valid box: {scaled_box}")
+            
+            print(f"DEBUG: Final transformed box: {scaled_box}")
+            return scaled_box
+            
+        except Exception as e:
+            print(f"DEBUG: Exception in transform_texture_coordinates_to_image: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def create_default_bounding_box(self, crop_rotate_ui):
+        """Create a default bounding box as fallback."""
+        if not crop_rotate_ui or crop_rotate_ui.original_image is None:
+            return None
+            
+        h, w = crop_rotate_ui.original_image.shape[:2]
+        offset_x = (crop_rotate_ui.texture_w - w) // 2
+        offset_y = (crop_rotate_ui.texture_h - h) // 2
+        
+        # Create a box in the center that's 80% of the image size
+        box_w = int(w * 0.8)
+        box_h = int(h * 0.8)
+        box_x = offset_x + (w - box_w) // 2
+        box_y = offset_y + (h - box_h) // 2
+        
+        return {
+            "x": box_x,
+            "y": box_y,
+            "w": box_w,
+            "h": box_h
+        }
+    
+    def confirm_segmentation_selection(self, pending_box, crop_rotate_ui, app_service):
+        """Confirm segmentation selection and perform segmentation."""
+        print(f"DEBUG: Starting segmentation confirmation, mode={self.segmentation_mode}")
+        
+        if not self.segmentation_mode:
+            return False, "Segmentation mode is not active"
+            
+        if not pending_box:
+            print("DEBUG: No pending box, creating default")
+            # Try to create a default box
+            pending_box = self.create_default_bounding_box(crop_rotate_ui)
+            if not pending_box:
+                return False, "No area selected and could not create default selection"
+        
+        print(f"DEBUG: Pending box: {pending_box}")
+        
+        # Validate box dimensions
+        if pending_box["w"] < 10 or pending_box["h"] < 10:
+            return False, f"Selection area too small: {pending_box['w']}x{pending_box['h']} (minimum 10x10)"
+        
+        # Box format: [x1, y1, x2, y2]
+        box = [pending_box["x"], pending_box["y"], 
+               pending_box["x"] + pending_box["w"], 
+               pending_box["y"] + pending_box["h"]]
+        print(f"DEBUG: Box coordinates: {box}")
+        
+        # Transform coordinates
+        print("DEBUG: Transforming coordinates...")
+        scaled_box = self.transform_texture_coordinates_to_image(box, crop_rotate_ui)
+        if not scaled_box:
+            return False, "Could not transform coordinates"
+        
+        print(f"DEBUG: Scaled box: {scaled_box}, types: {[type(x) for x in scaled_box]}")
+        
+        # Validate transformed box
+        try:
+            print("DEBUG: Starting coordinate validation...")
+            # Ensure all coordinates are scalar values and finite
+            for i, coord in enumerate(scaled_box):
+                print(f"DEBUG: Validating coord {i}: {coord} (type: {type(coord)})")
+                if not isinstance(coord, (int, float, np.integer, np.floating)):
+                    return False, f"Invalid coordinate type: {type(coord)}"
+                # Convert numpy scalars to Python scalars for safe comparison
+                coord_val = float(coord) if hasattr(coord, 'item') else coord
+                print(f"DEBUG: Coord {i} value: {coord_val}")
+                if not np.isfinite(coord_val):
+                    return False, f"Non-finite coordinate: {coord_val}"
+            print("DEBUG: Coordinate validation passed")
+        except Exception as e:
+            print(f"DEBUG: Coordinate validation exception: {e}")
+            return False, f"Coordinate validation error: {str(e)}"
+        
+        print("DEBUG: Checking box size...")
+        try:
+            if scaled_box[2] - scaled_box[0] < 10 or scaled_box[3] - scaled_box[1] < 10:
+                return False, "Selection too small relative to image"
+        except Exception as e:
+            print(f"DEBUG: Box size check exception: {e}")
+            return False, f"Box size validation error: {str(e)}"
+        
+        # Perform segmentation
+        print("DEBUG: Starting segmentation...")
+        try:
+            masks, mask_names = app_service.perform_box_segmentation(scaled_box)
+            if not masks or len(masks) == 0:
+                return False, "No objects found in selection"
+            
+            return True, f"Created {len(masks)} total masks"
+        except Exception as e:
+            print(f"DEBUG: Segmentation exception: {e}")
+            return False, f"Error: {str(e)}"
 
 
 class ApplicationService:
@@ -456,7 +657,7 @@ class ApplicationService:
     def setup_ui(self):
         """Setup the main UI components using modular architecture."""
         from ui.tool_panel_modular import ModularToolPanel
-        from ui.main_window import MainWindow
+        from ui.main_window_production import ProductionMainWindow
         
         # Create the modular tool panel
         self.tool_panel = ModularToolPanel(
@@ -466,12 +667,7 @@ class ApplicationService:
         )
         
         # Create main window with updated callback structure
-        self.main_window = MainWindow(
-            None,  # crop_rotate_ui - will be set when image is loaded
-            self.update_image_callback,
-            self.show_load_dialog,
-            self.show_save_dialog
-        )
+        self.main_window = ProductionMainWindow(self)
         
         # Setup the main window
         self.main_window.setup()

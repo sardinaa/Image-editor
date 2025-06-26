@@ -113,9 +113,26 @@ class CropPanel(BasePanel):
             if crop_rotate_ui:
                 crop_rotate_ui.update_image(None, None, None)
         
-        # Note: Mask overlays are NOT updated here during rotation to avoid inefficiency.
-        # Masks are only visible when both mask mode is active AND crop mode is disabled.
-        # Mask rotation is applied only once when crop mode is turned off in toggle_crop_mode.
+        # Update mask overlays if masks are enabled and visible, and crop mode is NOT active
+        # This ensures masks rotate consistently with the image rotation
+        if (self.main_window and 
+            hasattr(self.main_window, 'mask_overlay_renderer') and 
+            self.main_window.mask_overlay_renderer and
+            self.main_window.app_service and 
+            self.main_window.crop_rotate_ui):
+            
+            # Check if masks should be updated (not in crop mode, masks enabled)
+            crop_mode_active = UIStateManager.safe_get_value("crop_mode", False)
+            masks_enabled = UIStateManager.safe_get_value("mask_section_toggle", False)
+            show_overlay = UIStateManager.safe_get_value("show_mask_overlay", True)
+            
+            if not crop_mode_active and masks_enabled and show_overlay:
+                masks = self.main_window.app_service.get_mask_service().get_masks()
+                if masks:
+                    # Update mask overlays to apply current rotation
+                    self.main_window.mask_overlay_renderer.update_mask_overlays(
+                        masks, self.main_window.crop_rotate_ui
+                    )
         
         self._param_changed(sender, app_data, user_data)
     

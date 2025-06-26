@@ -35,8 +35,8 @@ class CropRotateUI:
             texture_height=self.texture_h,
             panel_id=self.panel_id,
             min_size=20,
-            handle_size=20,
-            handle_threshold=50
+            handle_size=25,
+            handle_threshold=80
         )
         
         # Set up bounding box callbacks
@@ -332,29 +332,6 @@ class CropRotateUI:
         
         texture_data = blended.flatten().astype(np.float32) / 255.0
         dpg.set_value(self.texture_tag, texture_data)
-
-    def on_mouse_down(self, sender, app_data):
-        crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
-        if crop_mode and self.bbox_renderer.bounding_box:
-            return self.bbox_renderer.on_mouse_down(sender, app_data)
-        return False
-
-    def on_mouse_drag(self, sender, app_data):
-        crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
-        # Only process drag if crop mode is active and we're actually dragging
-        if crop_mode and self.bbox_renderer.bounding_box and self.drag_active:
-            return self.bbox_renderer.on_mouse_drag(sender, app_data)
-        return False
-
-    def on_mouse_release(self, sender, app_data):
-        crop_mode = dpg.get_value("crop_mode") if dpg.does_item_exist("crop_mode") else False
-        if crop_mode and self.bbox_renderer.bounding_box:
-            result = self.bbox_renderer.on_mouse_release(sender, app_data)
-            # Additional safety: ensure drag_active is cleared even if bbox_renderer doesn't call end_drag
-            if self.drag_active and not self.bbox_renderer.is_dragging:
-                self.drag_active = False
-            return result
-        return False
 
     def set_to_max_rect(self, sender, app_data, user_data):
         if self.max_rect:

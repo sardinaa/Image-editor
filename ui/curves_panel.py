@@ -28,10 +28,10 @@ class CurvesPanel:
         self.current_interpolation = "Linear"
         self.interpolation_combo_tag = "curves_interpolation_combo"
         
-        # Plot sizing
-        self.plot_size = 150  # Default plot size
-        self.min_plot_size = 100  # Minimum plot size
-        self.max_plot_size = 250  # Maximum plot size
+        # Plot sizing - reduced for better space utilization  
+        self.plot_size = 120  # Reduced from 150 to save space
+        self.min_plot_size = 80   # Reduced minimum
+        self.max_plot_size = 200  # Reduced maximum
         
         # Create theme tags
         self.theme_rgb = "curves_theme_rgb"

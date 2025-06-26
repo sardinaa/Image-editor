@@ -79,9 +79,12 @@ class ModularToolPanel:
     
     def setup(self):
         """Setup the modular tool panel and all its components."""
+        # Calculate available width for histogram
+        available_width = self._get_available_width()
+        
         # Initialize specialized panels
         self.curves_panel = CurvesPanel(self.callback)
-        self.histogram_panel = HistogramPanel()
+        self.histogram_panel = HistogramPanel(width=available_width)
         
         # Setup specialized panels
         if hasattr(self.curves_panel, 'setup'):
@@ -95,6 +98,21 @@ class ModularToolPanel:
             if masks_panel and hasattr(masks_panel, 'set_mask_service'):
                 masks_panel.set_mask_service(self.mask_service)
     
+    def _get_available_width(self):
+        """Calculate available width for the histogram panel."""
+        try:
+            # Get viewport width
+            viewport_width = dpg.get_viewport_client_width()
+            # Tool panel is 25% of viewport width
+            tool_panel_width = int(viewport_width * 0.25)
+            # Account for padding and borders - be more conservative
+            available_width = tool_panel_width - 25  # Account for left padding + border
+            # Ensure minimum width
+            return max(available_width, 200)
+        except (SystemError, RuntimeError):
+            # Viewport not created yet, use default
+            return 220
+    
     def draw(self):
         """Draw the complete tool panel."""
         with dpg.group(horizontal=False):
@@ -102,12 +120,12 @@ class ModularToolPanel:
             self._draw_histogram_panel()
             
             dpg.add_separator()
-            dpg.add_spacer(height=2)
+            dpg.add_spacer(height=1)  # Reduced from 2
             
             # Main tools header
             dpg.add_text("Basic Editing Tools", color=[176, 204, 255])
             dpg.add_separator()
-            dpg.add_spacer(height=2)
+            dpg.add_spacer(height=1)  # Reduced from 2
             
             # Crop panel
             crop_panel = self.panel_manager.get_panel("crop")
@@ -151,7 +169,7 @@ class ModularToolPanel:
     def _draw_curves_panel(self):
         """Draw the curves panel."""
         dpg.add_separator()
-        dpg.add_spacer(height=2)
+        dpg.add_spacer(height=1)  # Reduced from 2
         dpg.add_text("RGB Curves", color=[176, 204, 255])
         
         # Embed the curves panel directly
@@ -284,6 +302,12 @@ class ModularToolPanel:
         
         return params
     
+    def handle_resize(self):
+        """Handle window resize events and update histogram width."""
+        if self.histogram_panel:
+            new_width = self._get_available_width()
+            self.histogram_panel.set_width(new_width)
+    
     def update_histogram(self, image):
         """Update histogram with new image data."""
         if self.histogram_panel:
@@ -292,12 +316,9 @@ class ModularToolPanel:
     def update_masks(self, masks, mask_names=None):
         """Update masks in the masks panel."""
         try:
-            print(f"ToolPanel: updating masks table with {len(masks)} masks")
             masks_panel = self.panel_manager.get_panel("masks")
             if masks_panel:
                 masks_panel.update_masks(masks, mask_names)
-            else:
-                print("Masks panel not found in panel manager")
         except Exception as e:
             print(f"Error in ToolPanel.update_masks: {e}")
             import traceback
@@ -341,8 +362,6 @@ class ModularToolPanel:
     
     def enable_parameter_callbacks(self):
         """Enable parameter change callbacks on all panels."""
-        print("🔗 Enabling parameter callbacks on all tool panels...")
-        
         # Enable callbacks on component panels
         for panel in self.panel_manager.panels.values():
             if hasattr(panel, 'enable_callbacks'):
@@ -351,13 +370,9 @@ class ModularToolPanel:
         # Enable callbacks on specialized panels
         if self.curves_panel and hasattr(self.curves_panel, 'enable_callbacks'):
             self.curves_panel.enable_callbacks()
-            
-        print("✅ Parameter callbacks enabled on all panels")
     
     def disable_parameter_callbacks(self):
         """Disable parameter change callbacks on all panels."""
-        print("🔇 Disabling parameter callbacks on all tool panels...")
-        
         # Disable callbacks on component panels
         for panel in self.panel_manager.panels.values():
             if hasattr(panel, 'disable_callbacks'):
@@ -366,8 +381,6 @@ class ModularToolPanel:
         # Disable callbacks on specialized panels  
         if self.curves_panel and hasattr(self.curves_panel, 'disable_callbacks'):
             self.curves_panel.disable_callbacks()
-            
-        print("🚫 Parameter callbacks disabled on all panels")
     
     def cleanup(self):
         """Cleanup all panel components and resources."""
@@ -420,19 +433,13 @@ class ModularToolPanel:
     
     def _register_all_deferred_callbacks(self):
         """Register all deferred callbacks and double-click handlers for all panels."""
-        print("🔗 Registering deferred callbacks and double-click handlers...")
-        
         # Register deferred callbacks for all component panels
         for panel_name, panel in self.panel_manager.panels.items():
             if hasattr(panel, 'register_deferred_callbacks'):
                 panel.register_deferred_callbacks()
-                print(f"✓ Registered deferred callbacks for {panel_name} panel")
-        
-        print("✅ All deferred callbacks registered")
     
     def _setup_global_double_click_handler(self):
         """Setup global double-click handler for slider reset functionality."""
-        print("🖱️  Setting up global double-click handler for slider resets...")
         
         def global_double_click_handler(sender, app_data, user_data):
             """Handle global double-click events for slider resets."""
@@ -446,21 +453,91 @@ class ModularToolPanel:
             # Check if any slider is being hovered and reset it
             for tag, default_value in all_slider_defaults.items():
                 if dpg.does_item_exist(tag) and dpg.is_item_hovered(tag):
-                    # Reset the slider to its default value
-                    dpg.set_value(tag, default_value)
+                    # Set reset flag in EventCoordinator to prevent interference
+                    if (hasattr(self, 'main_window') and self.main_window and 
+                        hasattr(self.main_window, 'event_coordinator') and 
+                        self.main_window.event_coordinator):
+                        self.main_window.event_coordinator.set_resetting_parameter(True)
                     
-                    # Trigger the parameter change callback to update the image
-                    if self.callback:
-                        self.callback(tag, default_value, None)
+                    try:
+                        # Set override value in EventCoordinator BEFORE setting UI value
+                        if (hasattr(self, 'main_window') and self.main_window and 
+                            hasattr(self.main_window, 'event_coordinator') and 
+                            self.main_window.event_coordinator):
+                            self.main_window.event_coordinator.set_parameter_override(tag, default_value)
+                        
+                        # Reset the slider value
+                        dpg.set_value(tag, default_value)
+                        
+                        # DIRECT PROCESSOR UPDATE - bypass normal parameter collection
+                        if (hasattr(self, 'main_window') and self.main_window and 
+                            hasattr(self.main_window, 'app_service') and self.main_window.app_service and
+                            hasattr(self.main_window.app_service, 'image_service') and 
+                            self.main_window.app_service.image_service and
+                            self.main_window.app_service.image_service.image_processor):
+                            
+                            processor = self.main_window.app_service.image_service.image_processor
+                            
+                            # Use the EventCoordinator's force method for better reliability
+                            if (hasattr(self.main_window, 'event_coordinator') and 
+                                self.main_window.event_coordinator):
+                                success = self.main_window.event_coordinator.force_processor_parameter(tag, default_value)
+                                if not success:
+                                    # Fallback to direct attribute setting
+                                    if hasattr(processor, tag):
+                                        setattr(processor, tag, default_value)
+                            
+                            # Force image processing with current parameters
+                            processed_image = processor.apply_all_edits()
+                            if processed_image is not None:
+                                # Update the display directly
+                                if (hasattr(self.main_window, 'event_coordinator') and 
+                                    self.main_window.event_coordinator):
+                                    self.main_window.event_coordinator._update_image_display(processed_image)
+                                    self.main_window.event_coordinator._update_histogram(processed_image)
+                        
+                        # Give time for UI to settle
+                        import time
+                        time.sleep(0.05)
+                        
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                    finally:
+                        # Clear reset flag in EventCoordinator
+                        if (hasattr(self, 'main_window') and self.main_window and 
+                            hasattr(self.main_window, 'event_coordinator') and 
+                            self.main_window.event_coordinator):
+                            self.main_window.event_coordinator.set_resetting_parameter(False)
+                        
+                        # Final verification and force reset if needed
+                        import time
+                        time.sleep(0.1)
+                        final_ui_value = dpg.get_value(tag)
+                        
+                        if final_ui_value != default_value:
+                            # Disable the slider callback temporarily
+                            if dpg.does_item_exist(tag):
+                                dpg.configure_item(tag, callback=None)
+                                dpg.set_value(tag, default_value)
+                                time.sleep(0.05)
+                                # Re-enable callback
+                                dpg.configure_item(tag, callback=self._param_changed)
+                            
+                            # Also force processor value one more time
+                            if (hasattr(self, 'main_window') and self.main_window and 
+                                hasattr(self.main_window, 'event_coordinator') and 
+                                self.main_window.event_coordinator):
+                                self.main_window.event_coordinator.force_processor_parameter(tag, default_value)
+                    
                     return  # Only reset one slider per double-click
         
         try:
             # Add global double-click handler
             with dpg.handler_registry():
                 dpg.add_mouse_double_click_handler(callback=global_double_click_handler)
-            print("✓ Global double-click handler setup complete")
         except Exception as e:
-            print(f"❌ Failed to setup global double-click handler: {e}")
+            pass
 
 # Legacy compatibility - alias the new class to the old name
 # This allows existing code to use the new modular implementation

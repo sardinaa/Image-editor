@@ -53,17 +53,6 @@ class MemoryManager:
         """Legacy cleanup method for GPU memory - redirects to clear_cuda_cache."""
         MemoryManager.clear_cuda_cache()
         print("GPU memory cleanup completed")
-
-
-def setup_memory_optimization():
-    """Setup memory optimization for better performance."""
-    import os
-    
-    # Set PyTorch CUDA memory management for better GPU memory handling
-    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-    
-    # Clear cache at startup
-    MemoryManager.clear_cuda_cache()
     
     @staticmethod
     def is_memory_sufficient(required_mb: float = 1000.0) -> bool:
@@ -102,6 +91,17 @@ def setup_memory_optimization():
             return 768
         else:
             return 1024
+
+
+def setup_memory_optimization():
+    """Setup memory optimization for better performance."""
+    import os
+    
+    # Set PyTorch CUDA memory management for better GPU memory handling
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    
+    # Clear cache at startup
+    MemoryManager.clear_cuda_cache()
     
     @contextmanager
     def memory_cleanup_context():
