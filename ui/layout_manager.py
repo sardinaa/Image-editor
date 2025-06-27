@@ -132,10 +132,12 @@ class LayoutManager:
                 height=plot_height,
                 width=plot_width,
                 anti_aliased=True,
-                pan_button=dpg.mvMouseButton_Left,
+                pan_button= dpg.mvMouseButton_Right,
+                box_select_button=dpg.mvMouseButton_Middle,
                 fit_button=dpg.mvMouseButton_Middle,
                 no_mouse_pos=False,
-                track_offset=True
+                track_offset=True,
+                equal_aspects=True  # Maintain aspect ratio to prevent squeezing
             ):
                 dpg.add_plot_axis(dpg.mvXAxis, label="X", no_gridlines=True, tag=self.main_window.x_axis_tag)
                 dpg.add_plot_axis(dpg.mvYAxis, label="Y", no_gridlines=True, tag=self.main_window.y_axis_tag)
@@ -223,7 +225,7 @@ class LayoutManager:
             # Update the crop UI's panel reference and recalculate axis limits
             self.main_window.crop_rotate_ui.panel_id = self.main_window.central_panel_tag
             if hasattr(self.main_window.crop_rotate_ui, 'update_axis_limits'):
-                self.main_window.crop_rotate_ui.update_axis_limits()
+                self.main_window.crop_rotate_ui.update_axis_limits(force=True)  # Force resize update
                 
             # Force update the image display
             if hasattr(self.main_window.crop_rotate_ui, 'update_image'):

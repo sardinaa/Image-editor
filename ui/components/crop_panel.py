@@ -20,7 +20,9 @@ class CropPanel(BasePanel):
         """Setup the crop panel."""
         self.parameters = {
             'crop_mode': False,
-            'rotate_angle': 0
+            'rotate_angle': 0,
+            'flip_horizontal': False,
+            'flip_vertical': False
         }
     
     def draw(self) -> None:
@@ -39,10 +41,10 @@ class CropPanel(BasePanel):
         # Crop controls panel (initially hidden)
         with dpg.child_window(
             tag="crop_panel",
-            height=65,
+            height=65,  # Increased height to accommodate flip buttons
             autosize_x=True,
             show=False,
-            border=True
+            border=False
         ):
             self._create_slider_float(
                 label="Rotation",
@@ -55,6 +57,22 @@ class CropPanel(BasePanel):
             # Set specific callback for rotation
             if UIStateManager.safe_item_exists("rotation_slider"):
                 dpg.set_item_callback("rotation_slider", self._update_crop_rotate)
+            
+            # Flip buttons row
+            with dpg.group(horizontal=True):
+                self._create_button(
+                    label="Flip H",
+                    callback=self._flip_horizontal,
+                    width=80,
+                    height=18
+                )
+                
+                self._create_button(
+                    label="Flip V", 
+                    callback=self._flip_vertical,
+                    width=80,
+                    height=18
+                )
             
             self._create_button(
                 label="Max Area",
@@ -108,10 +126,15 @@ class CropPanel(BasePanel):
     
     def _update_crop_rotate(self, sender, app_data, user_data):
         """Update crop/rotate visualization."""
+        # Get CropRotateUI from main window if crop_and_rotate_ref is None
+        crop_rotate_ui = None
         if self.crop_and_rotate_ref:
             crop_rotate_ui = self.crop_and_rotate_ref()
-            if crop_rotate_ui:
-                crop_rotate_ui.update_image(None, None, None)
+        elif self.main_window and hasattr(self.main_window, 'crop_rotate_ui'):
+            crop_rotate_ui = self.main_window.crop_rotate_ui
+            
+        if crop_rotate_ui:
+            crop_rotate_ui.update_image(None, None, None)
         
         # Update mask overlays if masks are enabled and visible, and crop mode is NOT active
         # This ensures masks rotate consistently with the image rotation
@@ -138,21 +161,96 @@ class CropPanel(BasePanel):
     
     def _set_max_rect(self, sender, app_data, user_data):
         """Set crop rectangle to maximum area."""
+        # Get CropRotateUI from main window if crop_and_rotate_ref is None
+        crop_rotate_ui = None
         if self.crop_and_rotate_ref:
             crop_rotate_ui = self.crop_and_rotate_ref()
-            if crop_rotate_ui:
-                crop_rotate_ui.set_max_rect()
+        elif self.main_window and hasattr(self.main_window, 'crop_rotate_ui'):
+            crop_rotate_ui = self.main_window.crop_rotate_ui
+            
+        if crop_rotate_ui:
+            crop_rotate_ui.set_to_max_rect(sender, app_data, user_data)
     
     def _crop_image(self, sender, app_data, user_data):
         """Apply crop to the image."""
+        # Get CropRotateUI from main window if crop_and_rotate_ref is None
+        crop_rotate_ui = None
         if self.crop_and_rotate_ref:
             crop_rotate_ui = self.crop_and_rotate_ref()
-            if crop_rotate_ui:
-                crop_rotate_ui.crop_image()
+        elif self.main_window and hasattr(self.main_window, 'crop_rotate_ui'):
+            crop_rotate_ui = self.main_window.crop_rotate_ui
+            
+        if crop_rotate_ui:
+            crop_rotate_ui.crop_image(sender, app_data, user_data)
+    
+    def _flip_horizontal(self, sender, app_data, user_data):
+        """Toggle horizontal flip."""
+        current = self.parameters.get('flip_horizontal', False)
+        self.parameters['flip_horizontal'] = not current
+        
+        # Get CropRotateUI and apply flip
+        crop_rotate_ui = None
+        if self.crop_and_rotate_ref:
+            crop_rotate_ui = self.crop_and_rotate_ref()
+        elif self.main_window and hasattr(self.main_window, 'crop_rotate_ui'):
+            crop_rotate_ui = self.main_window.crop_rotate_ui
+            
+        if crop_rotate_ui:
+            crop_rotate_ui.toggle_flip_horizontal()
+        
+        self._param_changed(sender, app_data, user_data)
+    
+    def _flip_vertical(self, sender, app_data, user_data):
+        """Toggle vertical flip."""
+        current = self.parameters.get('flip_vertical', False)
+        self.parameters['flip_vertical'] = not current
+        
+        # Get CropRotateUI and apply flip
+        crop_rotate_ui = None
+        if self.crop_and_rotate_ref:
+            crop_rotate_ui = self.crop_and_rotate_ref()
+        elif self.main_window and hasattr(self.main_window, 'crop_rotate_ui'):
+            crop_rotate_ui = self.main_window.crop_rotate_ui
+            
+        if crop_rotate_ui:
+            crop_rotate_ui.toggle_flip_vertical()
+        
+        self._param_changed(sender, app_data, user_data)
+    
+    def _update_flip_display(self):
+        """Update the crop/rotate display to show flips."""
+        # Get CropRotateUI from main window if crop_and_rotate_ref is None
+        crop_rotate_ui = None
+        if self.crop_and_rotate_ref:
+            crop_rotate_ui = self.crop_and_rotate_ref()
+        elif self.main_window and hasattr(self.main_window, 'crop_rotate_ui'):
+            crop_rotate_ui = self.main_window.crop_rotate_ui
+            
+        if crop_rotate_ui:
+            crop_rotate_ui.update_image(None, None, None)
     
     def get_parameters(self) -> Dict[str, Any]:
         """Get current crop parameters."""
-        return {
+        params = {
             'crop_mode': UIStateManager.safe_get_value("crop_mode", False),
             'rotate_angle': UIStateManager.safe_get_value("rotation_slider", 0)
         }
+        
+        # Get flip states from CropRotateUI if available
+        crop_rotate_ui = None
+        if self.crop_and_rotate_ref:
+            crop_rotate_ui = self.crop_and_rotate_ref()
+        elif self.main_window and hasattr(self.main_window, 'crop_rotate_ui'):
+            crop_rotate_ui = self.main_window.crop_rotate_ui
+            
+        if crop_rotate_ui:
+            flip_states = crop_rotate_ui.get_flip_states()
+            params.update(flip_states)
+        else:
+            # Fallback to local parameters
+            params.update({
+                'flip_horizontal': self.parameters.get('flip_horizontal', False),
+                'flip_vertical': self.parameters.get('flip_vertical', False)
+            })
+        
+        return params

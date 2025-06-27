@@ -117,13 +117,15 @@ class MaskOverlayRenderer:
                 print(f"Error cleaning up mask overlay {mask_index}: {e}")
     
     def _prepare_render_context(self, crop_rotate_ui) -> Dict[str, Any]:
-        """Prepare rendering context with dimensions and rotation info."""
+        """Prepare rendering context with dimensions, rotation, and flip info."""
         context = {
             'texture_w': crop_rotate_ui.texture_w,
             'texture_h': crop_rotate_ui.texture_h,
             'orig_w': crop_rotate_ui.orig_w,
             'orig_h': crop_rotate_ui.orig_h,
             'current_angle': 0,
+            'flip_horizontal': False,
+            'flip_vertical': False,
             'offset_x': 0,
             'offset_y': 0
         }
@@ -131,6 +133,12 @@ class MaskOverlayRenderer:
         # Get current rotation angle if available
         if dpg.does_item_exist("rotation_slider"):
             context['current_angle'] = dpg.get_value("rotation_slider")
+        
+        # Get current flip states from CropRotateUI
+        if hasattr(crop_rotate_ui, 'get_flip_states'):
+            flip_states = crop_rotate_ui.get_flip_states()
+            context['flip_horizontal'] = flip_states.get('flip_horizontal', False)
+            context['flip_vertical'] = flip_states.get('flip_vertical', False)
         
         # Calculate offset based on rotation
         if (context['current_angle'] != 0 and 
@@ -219,35 +227,34 @@ class MaskOverlayRenderer:
     def _create_mask_overlay_texture(self, binary_mask: np.ndarray, mask_idx: int, context: Dict[str, Any]) -> Optional[np.ndarray]:
         """Create an overlay texture for a single mask."""
         try:
-            # Rotate the mask if there's a rotation angle
-            if context['current_angle'] != 0:
-                rotated_mask = self._rotate_mask(
-                    binary_mask, 
-                    context['current_angle'], 
-                    context['orig_w'], 
-                    context['orig_h']
-                )
-            else:
-                rotated_mask = binary_mask
+            # Apply transformations (rotation and flips) to the mask
+            transformed_mask = self._transform_mask(
+                binary_mask, 
+                context['current_angle'],
+                context['flip_horizontal'], 
+                context['flip_vertical'],
+                context['orig_w'], 
+                context['orig_h']
+            )
             
             # Create overlay texture
             overlay = np.zeros((context['texture_h'], context['texture_w'], 4), dtype=np.uint8)
             color = self.colors[mask_idx % len(self.colors)]
             
-            # Apply mask with color based on rotation state
+            # Apply mask with color based on transformation state
             if (context['current_angle'] != 0 and 
                 'rot_h' in context and 'rot_w' in context):
                 # Use rotated image dimensions
-                mask_h = min(rotated_mask.shape[0], context['rot_h'])
-                mask_w = min(rotated_mask.shape[1], context['rot_w'])
+                mask_h = min(transformed_mask.shape[0], context['rot_h'])
+                mask_w = min(transformed_mask.shape[1], context['rot_w'])
                 
-                # Apply rotated mask with color
+                # Apply transformed mask with color
                 for channel in range(4):
                     overlay[
                         context['offset_y']:context['offset_y'] + mask_h, 
                         context['offset_x']:context['offset_x'] + mask_w, 
                         channel
-                    ] = np.where(rotated_mask[:mask_h, :mask_w] == 1, color[channel], 0)
+                    ] = np.where(transformed_mask[:mask_h, :mask_w] == 1, color[channel], 0)
             else:
                 # Apply original mask with color (no rotation)
                 for channel in range(4):
@@ -255,13 +262,38 @@ class MaskOverlayRenderer:
                         context['offset_y']:context['offset_y'] + context['orig_h'], 
                         context['offset_x']:context['offset_x'] + context['orig_w'], 
                         channel
-                    ] = np.where(rotated_mask == 1, color[channel], 0)
+                    ] = np.where(transformed_mask == 1, color[channel], 0)
             
             return overlay
             
         except Exception as e:
             print(f"Error creating overlay texture for mask {mask_idx}: {e}")
             return None
+    
+    def _transform_mask(self, mask: np.ndarray, angle: float, flip_horizontal: bool, flip_vertical: bool, orig_w: int, orig_h: int) -> np.ndarray:
+        """Apply rotation and flip transformations to a mask."""
+        import cv2
+        
+        try:
+            transformed_mask = mask.copy()
+            
+            # Apply flips first (before rotation)
+            if flip_horizontal:
+                transformed_mask = np.fliplr(transformed_mask)
+            
+            if flip_vertical:
+                transformed_mask = np.flipud(transformed_mask)
+            
+            # Apply rotation if needed
+            if angle != 0:
+                transformed_mask = self._rotate_mask(transformed_mask, angle, orig_w, orig_h)
+            
+            return transformed_mask
+            
+        except Exception as e:
+            print(f"Error transforming mask: {e}")
+            # Return original mask if transformation fails
+            return mask
     
     def _rotate_mask(self, mask: np.ndarray, angle: float, orig_w: int, orig_h: int) -> np.ndarray:
         """Rotate a mask by the specified angle."""

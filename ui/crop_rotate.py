@@ -17,6 +17,10 @@ class CropRotateUI:
         self.offset_x = 0
         self.offset_y = 0
 
+        # Flip states
+        self.flip_horizontal = False
+        self.flip_vertical = False
+
         self.texture_w = int(np.ceil(diagonal))
         self.texture_h = self.texture_w
         self.texture_tag = "crop_rotate_texture"
@@ -89,6 +93,28 @@ class CropRotateUI:
                 self.bbox_renderer.set_bounding_box(max_bbox)
                 self.user_rect = max_bbox.to_dict()
 
+    def toggle_flip_horizontal(self):
+        """Toggle horizontal flip state and update display."""
+        self.flip_horizontal = not self.flip_horizontal
+        self.update_image(None, None, None)
+    
+    def toggle_flip_vertical(self):
+        """Toggle vertical flip state and update display."""
+        self.flip_vertical = not self.flip_vertical
+        self.update_image(None, None, None)
+    
+    def apply_flips_to_image(self, image):
+        """Apply current flip states to an image."""
+        flipped_image = image.copy()
+        
+        if self.flip_horizontal:
+            flipped_image = cv2.flip(flipped_image, 1)
+        
+        if self.flip_vertical:
+            flipped_image = cv2.flip(flipped_image, 0)
+        
+        return flipped_image
+
     def update_image(self, sender, app_data, user_data):
         # Try to get panel dimensions, use fallback if not available
         try:
@@ -106,13 +132,17 @@ class CropRotateUI:
         if crop_mode:
             # Modo edición: mostrar imagen rotada completa con rectángulo
             rotated_image = self.image_processor.rotate_image(self.original_image, angle)
+            
+            # Apply flips to the rotated image
+            rotated_image = self.apply_flips_to_image(rotated_image)
+            
             rot_h, rot_w = rotated_image.shape[:2]
             
             # Store these offset values as they'll be needed later for proper cropping
             self.offset_x = (self.texture_w - rot_w) // 2
             self.offset_y = (self.texture_h - rot_h) // 2
             
-            padded_image = np.full((self.texture_h, self.texture_w, 4), [100, 100, 100, 0], dtype=np.uint8)
+            padded_image = np.full((self.texture_h, self.texture_w, 4), [37,37,38,255], dtype=np.uint8)
             
             if rotated_image.shape[2] == 3:
                 rotated_image = cv2.cvtColor(rotated_image, cv2.COLOR_RGB2RGBA)
@@ -151,6 +181,8 @@ class CropRotateUI:
             if self.user_rect and hasattr(self, 'rotated_image') and self.rotated_image is not None:
                 # Adjust rectangle coordinates relative to the rotated image, not the texture
                 rotated_image = self.image_processor.rotate_image(self.original_image, angle)
+                # Apply flips to the rotated image
+                rotated_image = self.apply_flips_to_image(rotated_image)
                 self.rotated_image = rotated_image.copy()
                 rx = int(self.user_rect["x"] - self.offset_x)
                 ry = int(self.user_rect["y"] - self.offset_y)
@@ -179,7 +211,7 @@ class CropRotateUI:
 
                     # Create background and center the cropped image
                     gray_background = np.full((self.texture_h, self.texture_w, 4), 
-                                             [100, 100, 100, 0], dtype=np.uint8)
+                                             [37,37,38,255], dtype=np.uint8)
                     
                     offset_x = (self.texture_w - cropped_image.shape[1]) // 2
                     offset_y = (self.texture_h - cropped_image.shape[0]) // 2
@@ -212,9 +244,16 @@ class CropRotateUI:
                 # Just display the original image with processing parameters but no crop
                 display_image = self.original_image.copy()  # self.original_image already has all processing applied
                 
+                # Apply rotation if there's an angle
+                if angle != 0:
+                    display_image = self.image_processor.rotate_image(display_image, angle)
+                
+                # Apply flips to the display image
+                display_image = self.apply_flips_to_image(display_image)
+                
                 # Create background and center the image
                 gray_background = np.full((self.texture_h, self.texture_w, 4), 
-                                         [100, 100, 100, 0], dtype=np.uint8)
+                                         [37,37,38,255], dtype=np.uint8)
                 
                 # Get dimensions of the processed image
                 display_h, display_w = display_image.shape[:2]
@@ -256,10 +295,18 @@ class CropRotateUI:
                                 tag="main_image_series"
                             )
         
-        # Update axis limits to maintain proper aspect ratio
-        self.update_axis_limits()
+        # Only update axis limits on initial load to preserve user's zoom/pan
+        # During rotation, preserve the current zoom level
+        if not hasattr(self, '_axis_limits_initialized'):
+            self.update_axis_limits()
+            self._axis_limits_initialized = True
     
-    def update_axis_limits(self):
+    def update_axis_limits(self, force=False):
+        """Update axis limits to fit image. Only updates on initial load unless forced."""
+        # Preserve user zoom/pan during rotation unless explicitly forced
+        if not force and hasattr(self, '_axis_limits_initialized') and dpg.does_item_exist("main_image_series"):
+            return
+            
         # Get actual image dimensions within the texture
         orig_w = self.orig_w
         orig_h = self.orig_h
@@ -313,10 +360,16 @@ class CropRotateUI:
             y_max = y_center + display_height / 2
         
         # Don't modify the image series bounds - keep them as the full texture
-        # The axis limits will control what portion of the texture is visible
+        # Use auto-fitting instead of locked limits to allow free panning
+        dpg.set_axis_limits_auto(self.x_axis_tag)
+        dpg.set_axis_limits_auto(self.y_axis_tag)
         
-        dpg.set_axis_limits(self.x_axis_tag, x_min, x_max)
-        dpg.set_axis_limits(self.y_axis_tag, y_min, y_max)
+        # Then fit the current data
+        dpg.fit_axis_data(self.x_axis_tag)
+        dpg.fit_axis_data(self.y_axis_tag)
+        
+        # Mark axis as initialized to prevent future forced updates
+        self._axis_limits_initialized = True
 
     def update_rectangle_overlay(self, force_update=False):
         current_time = time.time()
@@ -354,7 +407,10 @@ class CropRotateUI:
             min(rh, self.orig_h - max(0, ry - offset_y))
         )
         # Apply rotation and crop
-        cropped = self.image_processor.crop_rotate_flip(self.original_image, crop_rect, angle)
+        cropped = self.image_processor.crop_rotate_flip(
+            self.original_image, crop_rect, angle, 
+            self.flip_horizontal, self.flip_vertical
+        )
         # Update the original_image with the cropped result
         self.original_image = cropped.copy()
         # Ensure the aspect ratio is maintained
@@ -377,6 +433,13 @@ class CropRotateUI:
         else:
             with dpg.texture_registry():
                 dpg.add_raw_texture(width, height, cropped_flat, tag="cropped_texture", format=dpg.mvFormat_Float_rgba)
+
+    def get_flip_states(self):
+        """Get current flip states."""
+        return {
+            'flip_horizontal': self.flip_horizontal,
+            'flip_vertical': self.flip_vertical
+        }
 
     def cleanup(self):
         """Cleanup CropRotateUI resources."""

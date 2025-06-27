@@ -65,17 +65,13 @@ class EventHandlers:
         if not main_window:
             return False
         
-        print(f"=== EventHandlers: Mouse down event ===")
-        print(f"Crop mode active: {self._check_crop_mode_active()}")
-        print(f"Image plot hovered: {self._check_image_plot_hovered()}")
-        
         # Priority 1: Crop mode handling - centralized logic
         if (self._check_crop_mode_active() and 
             hasattr(main_window, 'crop_rotate_ui') and 
             main_window.crop_rotate_ui and
             self._check_image_plot_hovered()):
             
-            print("EventHandlers: Handling crop mode mouse down")
+            # Handle bounding box interactions directly with left-click
             return self._handle_crop_mouse_down(main_window.crop_rotate_ui.bbox_renderer, sender, app_data)
         
         # Priority 2: Segmentation mode handling
@@ -85,7 +81,6 @@ class EventHandlers:
             main_window.segmentation_bbox_renderer and
             self._check_image_plot_hovered()):
             
-            print("EventHandlers: Handling segmentation mode")
             return self._handle_crop_mouse_down(main_window.segmentation_bbox_renderer, sender, app_data)
         
         # Priority 3: Box selection mode handling  
@@ -93,7 +88,6 @@ class EventHandlers:
             main_window.box_selection_mode and 
             self._check_image_plot_hovered()):
             
-            print("EventHandlers: Handling box selection mode")
             main_window.box_selection_active = True
             plot_pos = dpg.get_plot_mouse_pos()
             main_window.box_start = list(plot_pos)
@@ -125,8 +119,6 @@ class EventHandlers:
             if (hasattr(main_window.crop_rotate_ui, 'bbox_renderer') and 
                 main_window.crop_rotate_ui.bbox_renderer):
                 result = self._handle_crop_mouse_drag(main_window.crop_rotate_ui.bbox_renderer, sender, app_data)
-                if result:
-                    print("EventHandlers: BBox drag handled")
                 return result
         
         # Priority 2: Segmentation mode handling
@@ -330,10 +322,6 @@ class EventHandlers:
         mouse_pos = dpg.get_mouse_pos()
         texture_x, texture_y = bbox_renderer.screen_to_texture_coords(mouse_pos[0], mouse_pos[1])
         
-        print(f"=== EventHandlers: Centralized mouse down ===")
-        print(f"Screen pos: {mouse_pos}")
-        print(f"Texture coords: ({texture_x:.1f}, {texture_y:.1f})")
-        
         # If no bounding box exists, start creating a new one
         if not bbox_renderer.bounding_box:
             from .bounding_box_renderer import BoundingBox, DragMode, HandleType
@@ -346,47 +334,32 @@ class EventHandlers:
             bbox_renderer.drag_start_mouse = (texture_x, texture_y)
             bbox_renderer.drag_start_box = bbox_renderer.bounding_box.copy()
             
-            print(f"EventHandlers: Created new bounding box at {texture_x}, {texture_y}")
+            if bbox_renderer.on_start_drag_callback:
+                bbox_renderer.on_start_drag_callback(bbox_renderer.bounding_box.copy())
+            return True
+        
+        # Check for handle hits first (resize mode with direct left-click)
+        hit_handle = bbox_renderer.hit_test_handles(texture_x, texture_y)
+        if hit_handle:
+            from .bounding_box_renderer import DragMode
+            
+            bbox_renderer.is_dragging = True
+            bbox_renderer.drag_mode = DragMode.RESIZE
+            bbox_renderer.drag_handle = hit_handle
+            bbox_renderer.drag_start_mouse = (texture_x, texture_y)
+            bbox_renderer.drag_start_box = bbox_renderer.bounding_box.copy()
             
             if bbox_renderer.on_start_drag_callback:
                 bbox_renderer.on_start_drag_callback(bbox_renderer.bounding_box.copy())
             return True
         
-        # Check if Control key is pressed for move mode
-        is_ctrl_pressed = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
-        
-        # Check for handle hits first (only for resize mode)
-        if not is_ctrl_pressed:
-            hit_handle = bbox_renderer.hit_test_handles(texture_x, texture_y)
-            if hit_handle:
-                from .bounding_box_renderer import DragMode
-                
-                bbox_renderer.is_dragging = True
-                bbox_renderer.drag_mode = DragMode.RESIZE
-                bbox_renderer.drag_handle = hit_handle
-                bbox_renderer.drag_start_mouse = (texture_x, texture_y)
-                bbox_renderer.drag_start_box = bbox_renderer.bounding_box.copy()
-                
-                if bbox_renderer.on_start_drag_callback:
-                    bbox_renderer.on_start_drag_callback(bbox_renderer.bounding_box.copy())
-                return True
-        
-        # Check if clicking inside the box
+        # Check if clicking inside the box (move mode with direct left-click)
         if bbox_renderer.bounding_box.contains_point(texture_x, texture_y):
             from .bounding_box_renderer import DragMode
             
             bbox_renderer.is_dragging = True
-            
-            if is_ctrl_pressed:
-                # Control + click = move mode
-                bbox_renderer.drag_mode = DragMode.MOVE
-                bbox_renderer.drag_offset = (texture_x - bbox_renderer.bounding_box.x, texture_y - bbox_renderer.bounding_box.y)
-            else:
-                # Regular click = resize mode (drag the nearest edge/corner)
-                bbox_renderer.drag_mode = DragMode.RESIZE
-                bbox_renderer.drag_handle = bbox_renderer._get_nearest_handle(texture_x, texture_y)
-                bbox_renderer.drag_start_mouse = (texture_x, texture_y)
-            
+            bbox_renderer.drag_mode = DragMode.MOVE
+            bbox_renderer.drag_offset = (texture_x - bbox_renderer.bounding_box.x, texture_y - bbox_renderer.bounding_box.y)
             bbox_renderer.drag_start_box = bbox_renderer.bounding_box.copy()
             
             if bbox_renderer.on_start_drag_callback:
@@ -405,7 +378,6 @@ class EventHandlers:
         
         # Additional safety check: ensure left mouse button is still pressed
         if not dpg.is_mouse_button_down(dpg.mvMouseButton_Left):
-            print("EventHandlers: Mouse button released during drag - ending drag")
             self._end_bbox_drag(bbox_renderer)
             return False
         
@@ -457,7 +429,6 @@ class EventHandlers:
             if (bbox_renderer.on_end_drag_callback and 
                 bbox_renderer.bounding_box.width > 0 and 
                 bbox_renderer.bounding_box.height > 0):
-                print(f"EventHandlers: End drag with box {bbox_renderer.bounding_box.x},{bbox_renderer.bounding_box.y},{bbox_renderer.bounding_box.width}x{bbox_renderer.bounding_box.height}")
                 bbox_renderer.on_end_drag_callback(bbox_renderer.bounding_box.copy())
         
         return was_dragging

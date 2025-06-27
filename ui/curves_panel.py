@@ -5,11 +5,12 @@ class CurvesPanel:
     def __init__(self, callback):
         self.callback = callback  # Callback to update the image after curves changes
         self.current_channel = "RGB"  # Default to RGB (all channels) 
-        self.channels = ["RGB", "R", "G", "B"]
+        self.channels = ["RGB", "R", "G", "B", "L"]  # Added Luminance
         self.curves = {
             "r": [(0, 0), (128, 128), (255, 255)],  # Default linear curve for R
             "g": [(0, 0), (128, 128), (255, 255)],  # Default linear curve for G
-            "b": [(0, 0), (128, 128), (255, 255)]   # Default linear curve for B
+            "b": [(0, 0), (128, 128), (255, 255)],  # Default linear curve for B
+            "l": [(0, 0), (128, 128), (255, 255)]   # Default linear curve for Luminance
         }
         self.plot_tag = "curves_plot"
         self.points_tag = "curves_points_series"  # Changed to be more descriptive and unique
@@ -25,7 +26,7 @@ class CurvesPanel:
         
         # Interpolation mode: "Linear" or "Spline"
         self.interpolation_modes = ["Linear", "Spline"]
-        self.current_interpolation = "Linear"
+        self.current_interpolation = "Spline"
         self.interpolation_combo_tag = "curves_interpolation_combo"
         
         # Plot sizing - reduced for better space utilization  
@@ -38,6 +39,7 @@ class CurvesPanel:
         self.theme_r = "curves_theme_r"
         self.theme_g = "curves_theme_g"
         self.theme_b = "curves_theme_b"
+        self.theme_l = "curves_theme_l"  # Theme for luminance
         self.theme_blue_selected = "curves_theme_blue_selected"
         
         # Create themes for each channel
@@ -185,6 +187,14 @@ class CurvesPanel:
                 dpg.add_theme_color(dpg.mvPlotCol_MarkerFill, [0, 0, 255], category=dpg.mvThemeCat_Plots)
                 dpg.add_theme_color(dpg.mvPlotCol_MarkerOutline, [0, 0, 255], category=dpg.mvThemeCat_Plots)
 
+        # Luminance theme (gray/white)
+        with dpg.theme(tag=self.theme_l):
+            with dpg.theme_component(dpg.mvLineSeries):
+                dpg.add_theme_color(dpg.mvPlotCol_Line, [192, 192, 192], category=dpg.mvThemeCat_Plots)
+            with dpg.theme_component(dpg.mvScatterSeries):
+                dpg.add_theme_color(dpg.mvPlotCol_MarkerFill, [192, 192, 192], category=dpg.mvThemeCat_Plots)
+                dpg.add_theme_color(dpg.mvPlotCol_MarkerOutline, [192, 192, 192], category=dpg.mvThemeCat_Plots)
+
         # Blue theme for selected points
         with dpg.theme(tag=self.theme_blue_selected):
             with dpg.theme_component(dpg.mvScatterSeries):
@@ -223,6 +233,8 @@ class CurvesPanel:
                 theme_tag = self.theme_g
             elif self.current_channel == "B":
                 theme_tag = self.theme_b
+            elif self.current_channel == "L":
+                theme_tag = self.theme_l
             
             # Delete previous series if they exist
             if dpg.does_item_exist(self.line_tag):
@@ -839,14 +851,12 @@ class CurvesPanel:
         """Reset the curve to default (linear)"""
         channel_key = self.current_channel.lower()
         if channel_key == "rgb":
-            # Reset all channels
-            self.curves = {
-                "r": [(0, 0), (128, 128), (255, 255)],
-                "g": [(0, 0), (128, 128), (255, 255)],
-                "b": [(0, 0), (128, 128), (255, 255)]
-            }
+            # Reset all RGB channels (don't reset luminance when resetting RGB)
+            self.curves["r"] = [(0, 0), (128, 128), (255, 255)]
+            self.curves["g"] = [(0, 0), (128, 128), (255, 255)]
+            self.curves["b"] = [(0, 0), (128, 128), (255, 255)]
         else:
-            # Reset only the selected channel
+            # Reset only the selected channel (including luminance)
             self.curves[channel_key] = [(0, 0), (128, 128), (255, 255)]
         
         self.update_plot()

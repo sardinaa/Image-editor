@@ -83,7 +83,7 @@ class MasksPanel(BasePanel):
             height=240,
             autosize_x=True,
             show=False,
-            border=True
+            border=False
         ):
             self._draw_segmentation_controls()
             self._draw_mask_management_controls()
@@ -378,21 +378,33 @@ class MasksPanel(BasePanel):
             print("Cannot perform auto segmentation when masks are disabled")
             return
         
+        # Show loading indicator
+        self._show_segmentation_loading()
+        
         # Use ApplicationService instead of going through main window
         if self.main_window and self.main_window.app_service:
-            print("🔄 Performing automatic segmentation via ApplicationService...")
-            masks, names = self.main_window.app_service.perform_automatic_segmentation()
-            
-            # Update the UI
-            self.update_masks(masks, names)
-            
-            # Update mask overlays
-            if self.main_window and hasattr(self.main_window, 'update_mask_overlays'):
-                self.main_window.update_mask_overlays(masks)
-            
-            print(f"✅ Auto segmentation completed: {len(masks)} masks created")
+            try:
+                print("🔄 Performing automatic segmentation via ApplicationService...")
+                masks, names = self.main_window.app_service.perform_automatic_segmentation()
+                
+                # Update the UI
+                self.update_masks(masks, names)
+                
+                # Update mask overlays
+                if self.main_window and hasattr(self.main_window, 'update_mask_overlays'):
+                    self.main_window.update_mask_overlays(masks)
+                
+                print(f"✅ Auto segmentation completed: {len(masks)} masks created")
+            except Exception as e:
+                print(f"❌ Auto segmentation failed: {e}")
+                self._update_status(f"Error: {str(e)}")
+            finally:
+                # Always hide loading indicator when done
+                self._hide_segmentation_loading()
         else:
             print("❌ ApplicationService not available for auto segmentation")
+            # Hide loading indicator if service not available
+            self._hide_segmentation_loading()
     
     def _clear_all_masks(self, sender, app_data, user_data):
         """Clear all masks through application service."""
@@ -450,6 +462,17 @@ class MasksPanel(BasePanel):
             lambda: UIStateManager.safe_set_value("segmentation_mode", False)
         )
         
+        # Hide the bounding box immediately when confirm is clicked
+        if (self.main_window and hasattr(self.main_window, 'segmentation_bbox_renderer') and 
+            self.main_window.segmentation_bbox_renderer):
+            self.main_window.segmentation_bbox_renderer.reset()
+            # Also refresh the display to remove the bounding box overlay
+            if self.main_window.crop_rotate_ui:
+                self.main_window.crop_rotate_ui.update_image(None, None, None)
+        
+        # Show loading indicator
+        self._show_segmentation_loading()
+        
         # Use SegmentationService directly for business logic
         if self.main_window and self.main_window.app_service:
             try:
@@ -483,6 +506,12 @@ class MasksPanel(BasePanel):
             except Exception as e:
                 print(f"Error during segmentation confirmation: {e}")
                 self._update_status(f"Error: {str(e)}")
+            finally:
+                # Always hide loading indicator when done
+                self._hide_segmentation_loading()
+        else:
+            # Hide loading indicator if service not available
+            self._hide_segmentation_loading()
         
         # Set segmentation mode to false
         self.set_segmentation_mode(False)
@@ -1713,3 +1742,19 @@ class MasksPanel(BasePanel):
                 all_indices = list(range(len(masks)))
                 MaskOverlayManager.show_selected_overlays(all_indices)
                 print(f"Showing all {len(masks)} mask overlays via MaskOverlayManager")
+    
+    def _show_segmentation_loading(self):
+        """Show the segmentation loading indicator."""
+        try:
+            UIStateManager.safe_configure_item("segmentation_loading_group", show=True)
+            print("🔄 Showing segmentation loading indicator")
+        except Exception as e:
+            print(f"Error showing segmentation loading indicator: {e}")
+    
+    def _hide_segmentation_loading(self):
+        """Hide the segmentation loading indicator."""
+        try:
+            UIStateManager.safe_configure_item("segmentation_loading_group", show=False)
+            print("✅ Hidden segmentation loading indicator")
+        except Exception as e:
+            print(f"Error hiding segmentation loading indicator: {e}")

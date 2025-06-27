@@ -113,7 +113,7 @@ class DisplayService:
             
             # Create gray background like original implementation
             gray_background = np.full((texture_height, texture_width, 4), 
-                                     [100, 100, 100, 0], dtype=np.uint8)
+                                     [37,37,38,255], dtype=np.uint8)
             
             # Calculate centering offset
             offset_x = (texture_width - width) // 2
@@ -254,10 +254,10 @@ class DisplayService:
             
             # Set the axis limits to center on the actual image
             if safe_item_check(x_axis_tag):
-                dpg.set_axis_limits(x_axis_tag, x_min, x_max)
+                dpg.fit_axis_data(x_axis_tag)
             
             if safe_item_check(y_axis_tag):
-                dpg.set_axis_limits(y_axis_tag, y_min, y_max)
+                dpg.fit_axis_data(y_axis_tag)
                 
         except Exception as e:
             print(f"Error updating axis limits: {e}")
@@ -365,8 +365,8 @@ class DisplayService:
             y_max = y_center + display_height / 2
             
             # Set axis limits
-            dpg.set_axis_limits(x_axis_tag, x_min, x_max)
-            dpg.set_axis_limits(y_axis_tag, y_min, y_max)
+            dpg.fit_axis_data(x_axis_tag)
+            dpg.fit_axis_data(y_axis_tag)
             
         except Exception as e:
             print(f"Error updating axis limits: {e}")

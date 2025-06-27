@@ -115,9 +115,10 @@ class ProductionMainWindow:
         
         if not dpg.does_item_exist("main_mouse_handlers"):
             with dpg.handler_registry(tag="main_mouse_handlers"):
-                dpg.add_mouse_down_handler(callback=self.event_handlers.on_mouse_down)
-                dpg.add_mouse_drag_handler(callback=self.event_handlers.on_mouse_drag)
-                dpg.add_mouse_release_handler(callback=self.event_handlers.on_mouse_release)
+                # Only handle left mouse button to allow right-click panning
+                dpg.add_mouse_down_handler(callback=self.event_handlers.on_mouse_down, button=dpg.mvMouseButton_Left)
+                dpg.add_mouse_drag_handler(callback=self.event_handlers.on_mouse_drag, button=dpg.mvMouseButton_Left)
+                dpg.add_mouse_release_handler(callback=self.event_handlers.on_mouse_release, button=dpg.mvMouseButton_Left)
                 dpg.add_mouse_wheel_handler(callback=self.event_handlers.on_mouse_wheel)
                 
                 # Add keyboard handlers as well
@@ -409,7 +410,7 @@ class ProductionMainWindow:
         
         # Create texture with gray background
         texture = np.full((self.crop_rotate_ui.texture_h, self.crop_rotate_ui.texture_w, 4), 
-                         [100, 100, 100, 0], dtype=np.uint8)
+                         [37,37,38,255], dtype=np.uint8)
         
         # Center the image in the texture
         offset_x = (self.crop_rotate_ui.texture_w - w) // 2

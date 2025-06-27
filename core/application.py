@@ -379,7 +379,7 @@ class SegmentationService:
         return True
     
     def transform_texture_coordinates_to_image(self, box, crop_rotate_ui):
-        """Transform texture coordinates to image coordinates."""
+        """Transform texture coordinates to image coordinates, accounting for flips."""
         try:
             if not crop_rotate_ui or crop_rotate_ui.original_image is None:
                 print("DEBUG: transform_texture_coordinates_to_image - No crop_rotate_ui or original_image")
@@ -394,7 +394,16 @@ class SegmentationService:
             offset_x = (texture_w - w) // 2
             offset_y = (texture_h - h) // 2
             
+            # Get flip states
+            flip_horizontal = False
+            flip_vertical = False
+            if hasattr(crop_rotate_ui, 'get_flip_states'):
+                flip_states = crop_rotate_ui.get_flip_states()
+                flip_horizontal = flip_states.get('flip_horizontal', False)
+                flip_vertical = flip_states.get('flip_vertical', False)
+            
             print(f"DEBUG: Image dimensions: {w}x{h}, Texture: {texture_w}x{texture_h}, Offsets: ({offset_x}, {offset_y})")
+            print(f"DEBUG: Flip states - Horizontal: {flip_horizontal}, Vertical: {flip_vertical}")
             print(f"DEBUG: Input box: {box}, types: {[type(x) for x in box]}")
             
             # Convert all box coordinates to Python scalars first
@@ -416,6 +425,29 @@ class SegmentationService:
             y1 = max(0, min(h-1, int(box_scalars[1] - offset_y)))
             x2 = max(0, min(w-1, int(box_scalars[2] - offset_x)))
             y2 = max(0, min(h-1, int(box_scalars[3] - offset_y)))
+            
+            print(f"DEBUG: Box after texture-to-image transform: [{x1}, {y1}, {x2}, {y2}]")
+            
+            # Apply flip transformations to the box coordinates
+            if flip_horizontal:
+                # Flip X coordinates: x_new = image_width - x_old
+                x1_flipped = w - 1 - x2  # Right becomes left
+                x2_flipped = w - 1 - x1  # Left becomes right
+                x1, x2 = x1_flipped, x2_flipped
+                print(f"DEBUG: Applied horizontal flip: [{x1}, {y1}, {x2}, {y2}]")
+            
+            if flip_vertical:
+                # Flip Y coordinates: y_new = image_height - y_old
+                y1_flipped = h - 1 - y2  # Bottom becomes top
+                y2_flipped = h - 1 - y1  # Top becomes bottom
+                y1, y2 = y1_flipped, y2_flipped
+                print(f"DEBUG: Applied vertical flip: [{x1}, {y1}, {x2}, {y2}]")
+            
+            # Ensure coordinates are in correct order (x1 < x2, y1 < y2)
+            if x1 > x2:
+                x1, x2 = x2, x1
+            if y1 > y2:
+                y1, y2 = y2, y1
             
             scaled_box = [x1, y1, x2, y2]
             print(f"DEBUG: Computed scaled_box: {scaled_box}")

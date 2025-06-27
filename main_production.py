@@ -143,7 +143,7 @@ class ProductionImageEditor:
             # Create texture following original pattern
             with dpg.texture_registry():
                 gray_background = np.full((crop_rotate_ui.texture_h, crop_rotate_ui.texture_w, 4), 
-                                         [100, 100, 100, 0], dtype=np.uint8)
+                                         [37,37,38,255], dtype=np.uint8)
                 offset_x = (crop_rotate_ui.texture_w - crop_rotate_ui.orig_w) // 2
                 offset_y = (crop_rotate_ui.texture_h - crop_rotate_ui.orig_h) // 2
                 
@@ -168,7 +168,9 @@ class ProductionImageEditor:
             
             # Connect to main window following original pattern
             self.main_window.set_crop_rotate_ui(crop_rotate_ui)
-            crop_rotate_ui.update_axis_limits()
+            # Only reset axis limits for initial image load, allow free panning afterward
+            if not hasattr(crop_rotate_ui, '_axis_limits_initialized'):
+                crop_rotate_ui.update_axis_limits()  # Don't force, just fit data
             
             # Update histogram with the newly loaded image
             if self.main_window and self.main_window.tool_panel:
