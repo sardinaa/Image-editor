@@ -52,11 +52,6 @@ class ImageSegmenter:
         """Clear CUDA cache to free up memory"""
         MemoryManager.clear_cuda_cache()
     
-    def _get_available_memory(self):
-        """Get available GPU memory in MB"""
-        memory_info = MemoryManager.get_device_info()
-        return memory_info['total_mb']
-    
     def _resize_image_with_memory_constraint(self, image):
         """Resize image considering memory constraints"""
         height, width = image.shape[:2]
@@ -381,10 +376,6 @@ class ImageSegmenter:
         except Exception as e:
             print(f"Fallback box segmentation failed: {e}")
             return []
-    
-    def get_memory_info(self):
-        """Get current memory usage information"""
-        return MemoryManager.get_device_info()
     
     def cleanup_memory(self):
         """Explicitly clean up memory and reset model if needed"""

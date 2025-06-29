@@ -335,17 +335,6 @@ class ModularToolPanel:
         if masks_panel:
             masks_panel.toggle_mask_section(sender, app_data, user_data)
     
-    def reset_mask_editing(self):
-        """Reset mask editing mode."""
-        masks_panel = self.panel_manager.get_panel("masks")
-        if masks_panel:
-            masks_panel.selected_mask_indices.clear()
-            masks_panel._disable_mask_editing()
-            
-            # Hide all mask overlays
-            if UIStateManager.safe_item_exists("show_mask_overlay"):
-                UIStateManager.safe_set_value("show_mask_overlay", False)
-    
     def get_selected_mask_indices(self):
         """Get currently selected mask indices."""
         masks_panel = self.panel_manager.get_panel("masks")

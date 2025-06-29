@@ -284,28 +284,6 @@ class ImageProcessor:
         self._update_cache_and_params(current_params)
         return img
     
-    def _apply_edits_full(self):
-        """Full processing without optimization - fallback method"""
-        img = self.base_image.copy()
-        img = self.apply_exposure(img, self.exposure)
-        img = self.apply_illumination(img, self.illumination)
-        img = self.apply_contrast(img, self.contrast)
-        img = self.apply_shadow(img, self.shadow)
-        img = self.apply_highlights(img, self.highlights)
-        img = self.apply_whites(img, self.whites)
-        img = self.apply_blacks(img, self.blacks)
-        img = self.apply_saturation(img, self.saturation)
-        img = self.apply_texture(img, self.texture)
-        img = self.apply_grain(img, self.grain)
-        img = self.apply_temperature(img, self.temperature)
-        
-        if self.curves_data and 'curves' in self.curves_data:
-            curves = self.curves_data['curves']
-            interpolation_mode = self.curves_data.get('interpolation_mode', 'Linear')
-            img = self.apply_rgb_curves(img, curves, interpolation_mode)
-        
-        return img
-    
     def _update_cache_and_params(self, current_params):
         """Update the parameter tracking and limit cache size"""
         # Create a deep copy for curves_data to avoid reference issues
@@ -346,33 +324,6 @@ class ImageProcessor:
             'highlights': 0, 'whites': 0, 'blacks': 0, 'saturation': 1.0,
             'texture': 0, 'grain': 0, 'temperature': 0, 'curves_data': None
         }
-    
-    def enable_mask_editing(self, mask=None):
-        """
-        Enable or disable mask editing.
-        If a mask is provided, it will be used as the current mask.
-        """
-        self.mask_editing_enabled = True
-        if mask is not None:
-            self.current_mask = mask.astype(np.float32) / 255.0  # Normalize to [0,1] range
-
-    def disable_mask_editing(self):
-        """Disable mask editing."""
-        self.mask_editing_enabled = False
-        self.current_mask = None
-
-    def apply_mask(self, image, mask, invert_mask=False):
-        """
-        Apply a mask to the image.
-        If invert_mask is True, the mask will be inverted before application.
-        """
-        if invert_mask:
-            mask = 1 - mask  # Invert the mask
-        # Ensure the mask is the same size as the image
-        if mask.shape[:2] != image.shape[:2]:
-            mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_LINEAR)
-        # Apply the mask: multiply image by mask (in float32), then convert back to uint8
-        return cv2.convertScaleAbs(image.astype(np.float32) * mask[..., np.newaxis])
     
     def apply_highlights(self, image, value):
         """
@@ -730,35 +681,6 @@ class ImageProcessor:
         else:
             # Apply curves to the entire image
             return self._apply_curves_with_luminance(image, curves, interpolation_mode)
-    
-    def _apply_curves_to_image(self, image, curves, interpolation_mode="Spline"):
-        """Helper method to apply curves to an image"""
-        # Handle both RGB and RGBA images
-        if image.shape[2] == 4:
-            # RGBA image - split into RGB and alpha channels
-            b, g, r, a = cv2.split(image)
-            alpha_channel = a
-        else:
-            # RGB image - split normally (note: OpenCV uses BGR order)
-            b, g, r = cv2.split(image)
-            alpha_channel = None
-        
-        # Apply curves to RGB channels
-        if "r" in curves and curves["r"]:
-            lut_r = self.generate_lut_from_points(curves["r"], interpolation_mode)
-            r = cv2.LUT(r, lut_r)
-        if "g" in curves and curves["g"]:
-            lut_g = self.generate_lut_from_points(curves["g"], interpolation_mode)
-            g = cv2.LUT(g, lut_g)
-        if "b" in curves and curves["b"]:
-            lut_b = self.generate_lut_from_points(curves["b"], interpolation_mode)
-            b = cv2.LUT(b, lut_b)
-        
-        # Merge channels back, including alpha if present
-        if alpha_channel is not None:
-            return cv2.merge([b, g, r, alpha_channel])
-        else:
-            return cv2.merge([b, g, r])
     
     def generate_lut_from_points(self, points, interpolation_mode="Spline"):
         """Generate a lookup table from control points using specified interpolation"""

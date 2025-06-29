@@ -1,7 +1,3 @@
-"""
-UI Helper utilities for DearPyGUI components.
-Centralizes common UI patterns to reduce code duplication.
-"""
 import dearpygui.dearpygui as dpg
 from typing import List, Dict, Any, Callable
 
@@ -110,7 +106,6 @@ class ControlGroupManager:
                 self.control_groups[group_name], False
             )
 
-
 class MaskOverlayManager:
     """Centralized mask overlay management."""
     
@@ -134,25 +129,11 @@ class MaskOverlayManager:
         """Show overlays for selected mask indices."""
         for idx in selected_indices:
             MaskOverlayManager.show_overlay(idx)
-    
-    @staticmethod
-    def cleanup_overlay(mask_index: int) -> bool:
-        """Clean up a specific mask overlay."""
-        series_tag = f"mask_series_{mask_index}"
-        if dpg.does_item_exist(series_tag):
-            try:
-                dpg.delete_item(series_tag)
-                return True
-            except Exception as e:
-                print(f"Error deleting mask overlay {mask_index}: {e}")
-        return False
-
 
 # Convenience function for backward compatibility
 def safe_item_check(tag: str) -> bool:
     """Safely check if a DearPyGUI item exists."""
     return UIStateManager.safe_item_exists(tag)
-
 
 def setup_ui_theme():
     """Setup a consistent UI theme for the application."""

@@ -63,15 +63,6 @@ class BoundingBox:
             self.width = bounds.x + bounds.width - self.x
         if self.y + self.height > bounds.y + bounds.height:
             self.height = bounds.y + bounds.height - self.y
-    
-    def get_center(self) -> Tuple[float, float]:
-        """Get the center point of the bounding box."""
-        return (self.x + self.width / 2, self.y + self.height / 2)
-    
-    def set_center(self, cx: float, cy: float) -> None:
-        """Set the center point of the bounding box."""
-        self.x = cx - self.width / 2
-        self.y = cy - self.height / 2
 
 class BoundingBoxRenderer:
     """
@@ -182,26 +173,6 @@ class BoundingBoxRenderer:
         texture_y = rel_y * self.texture_height
         
         return texture_x, texture_y
-    
-    def get_handle_positions(self) -> Dict[HandleType, Tuple[float, float]]:
-        """Get the positions of all handles in plot coordinate system."""
-        if not self.bounding_box:
-            return {}
-        
-        box = self.bounding_box
-        # Convert from image coordinates (Y increases downward) to plot coordinates (Y increases upward)
-        # In image coords: (0,0) is top-left, Y increases downward
-        # In plot coords: (0,0) is bottom-left, Y increases upward
-        return {
-            HandleType.TOP_LEFT: (box.x, self.texture_height - box.y),
-            HandleType.TOP_RIGHT: (box.x + box.width, self.texture_height - box.y),
-            HandleType.BOTTOM_LEFT: (box.x, self.texture_height - (box.y + box.height)),
-            HandleType.BOTTOM_RIGHT: (box.x + box.width, self.texture_height - (box.y + box.height)),
-            HandleType.TOP: (box.x + box.width / 2, self.texture_height - box.y),
-            HandleType.BOTTOM: (box.x + box.width / 2, self.texture_height - (box.y + box.height)),
-            HandleType.LEFT: (box.x, self.texture_height - (box.y + box.height / 2)),
-            HandleType.RIGHT: (box.x + box.width, self.texture_height - (box.y + box.height / 2))
-        }
     
     def hit_test_handles(self, x: float, y: float) -> Optional[HandleType]:
         """Test if coordinates hit any handle. Returns the handle type or None.
@@ -375,21 +346,6 @@ class BoundingBoxRenderer:
         
         return result
     
-    def set_visual_style(self, 
-                        box_color: Tuple[int, int, int, int] = None,
-                        handle_color: Tuple[int, int, int, int] = None,
-                        box_thickness: int = None,
-                        handle_size: float = None) -> None:
-        """Set the visual style of the bounding box."""
-        if box_color:
-            self.box_color = box_color
-        if handle_color:
-            self.handle_color = handle_color
-        if box_thickness is not None:
-            self.box_thickness = box_thickness
-        if handle_size is not None:
-            self.handle_size = handle_size
-    
     def reset(self) -> None:
         """Reset the bounding box renderer to initial state."""
         self.bounding_box = None
@@ -398,71 +354,3 @@ class BoundingBoxRenderer:
         self.drag_mode = DragMode.NONE
         self.drag_handle = None
         self.drag_start_box = None
-    
-    def _get_nearest_handle(self, x: float, y: float) -> HandleType:
-        """
-        Determine the nearest handle to the given point for resize operations.
-        This is used when clicking inside the box without Control to resize.
-        """
-        if not self.bounding_box:
-            return HandleType.BOTTOM_RIGHT  # Default fallback
-        
-        box = self.bounding_box
-        
-        # Calculate relative position within the box (0.0 to 1.0)
-        rel_x = (x - box.x) / box.width if box.width > 0 else 0.5
-        rel_y = (y - box.y) / box.height if box.height > 0 else 0.5
-        
-        # Clamp to [0, 1] range
-        rel_x = max(0.0, min(1.0, rel_x))
-        rel_y = max(0.0, min(1.0, rel_y))
-        
-        # Determine which handle is closest based on relative position
-        # Divide the box into 9 regions (3x3 grid)
-        if rel_x < 0.33:  # Left third
-            if rel_y < 0.33:  # Top third
-                return HandleType.TOP_LEFT
-            elif rel_y > 0.67:  # Bottom third
-                return HandleType.BOTTOM_LEFT
-            else:  # Middle third
-                return HandleType.LEFT
-        elif rel_x > 0.67:  # Right third
-            if rel_y < 0.33:  # Top third
-                return HandleType.TOP_RIGHT
-            elif rel_y > 0.67:  # Bottom third
-                return HandleType.BOTTOM_RIGHT
-            else:  # Middle third
-                return HandleType.RIGHT
-        else:  # Middle third
-            if rel_y < 0.33:  # Top third
-                return HandleType.TOP
-            elif rel_y > 0.67:  # Bottom third
-                return HandleType.BOTTOM
-            else:  # Center - default to bottom-right for expansion
-                return HandleType.BOTTOM_RIGHT
-
-class BoundingBoxManager:
-    """
-    Manager class for handling multiple bounding box renderers.
-    Useful for applications that need multiple types of selections.
-    """
-    
-    def __init__(self):
-        self.renderers: Dict[str, BoundingBoxRenderer] = {}
-        self.active_renderer: Optional[str] = None
-    
-    def add_renderer(self, name: str, renderer: BoundingBoxRenderer) -> None:
-        """Add a named bounding box renderer."""
-        self.renderers[name] = renderer
-    
-    def set_active(self, name: str) -> None:
-        """Set the active bounding box renderer."""
-        if name in self.renderers:
-            self.active_renderer = name
-    
-    def get_active_renderer(self) -> Optional[BoundingBoxRenderer]:
-        """Get the currently active renderer."""
-        if self.active_renderer and self.active_renderer in self.renderers:
-            return self.renderers[self.active_renderer]
-        return None
-    

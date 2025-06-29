@@ -100,16 +100,6 @@ class MaskOverlayRenderer:
                 except Exception as e:
                     print(f"Error cleaning up mask overlay {idx}: {e}")
     
-    def cleanup_mask_overlay(self, mask_index: int) -> None:
-        """Clean up the visual overlay for a specific mask."""
-        series_tag = f"mask_series_{mask_index}"
-        if dpg.does_item_exist(series_tag):
-            try:
-                dpg.configure_item(series_tag, show=False)
-                dpg.delete_item(series_tag)
-            except Exception as e:
-                print(f"Error cleaning up mask overlay {mask_index}: {e}")
-    
     def _prepare_render_context(self, crop_rotate_ui) -> Dict[str, Any]:
         """Prepare rendering context with dimensions, rotation, and flip info."""
         context = {

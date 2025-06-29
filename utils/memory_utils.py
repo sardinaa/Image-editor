@@ -54,12 +54,6 @@ class MemoryManager:
         MemoryManager.clear_cuda_cache()
     
     @staticmethod
-    def is_memory_sufficient(required_mb: float = 1000.0) -> bool:
-        """Check if sufficient memory is available."""
-        info = MemoryManager.get_device_info()
-        return info['free_mb'] > required_mb
-    
-    @staticmethod
     def select_optimal_device(min_gpu_memory_gb: float = 4.0) -> str:
         """Select the optimal device based on available memory."""
         if not torch.cuda.is_available():
@@ -100,15 +94,6 @@ def setup_memory_optimization():
     
     # Clear cache at startup
     MemoryManager.clear_cuda_cache()
-    
-    @contextmanager
-    def memory_cleanup_context():
-        """Context manager for automatic memory cleanup."""
-        try:
-            yield
-        finally:
-            MemoryManager.clear_cuda_cache()
-
 
 class ErrorHandler:
     """Centralized error handling for memory and GPU operations."""
@@ -207,14 +192,3 @@ class ResourceManager:
             return True
         
         return False
-    
-    def cleanup_all_models(self):
-        """Clean up all registered models."""
-        for name, model_info in self.active_models.items():
-            try:
-                if hasattr(model_info['model'], 'cleanup'):
-                    model_info['model'].cleanup()
-            except Exception as e:
-                print(f"Error cleaning up model {name}: {e}")
-        
-        MemoryManager.clear_cuda_cache()

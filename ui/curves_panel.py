@@ -347,48 +347,6 @@ class CurvesPanel:
         # Notify of changes to update the image
         self.callback(sender, app_data, user_data)
     
-    def on_plot_clicked(self, sender, app_data):
-        """Handle clicks specifically on the plot area"""
-        
-        # Check if we're actually over the plot
-        if not self.is_mouse_over_plot():
-            return
-            
-        # Get plot coordinates
-        x, y = self.get_mouse_plot_coordinates()
-        
-        # Clamp values
-        x = max(0, min(255, x))
-        y = max(0, min(255, y))
-        
-        # Get the current channel key
-        channel_key = self.current_channel.lower()
-        
-        # Fix: Use "r" for point checking when "rgb" is selected
-        check_key = "r" if channel_key == "rgb" else channel_key
-        
-        # If RGB selected, modify all channels
-        channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
-        
-        # Check if we're clicking near an existing point
-        hit_radius = 40
-        for idx, point in enumerate(self.curves[check_key]):
-            distance = abs(point[0] - x) + abs(point[1] - y)
-            if distance < hit_radius:
-                # Start dragging this point
-                self.dragging_point = (idx, channels_to_modify)
-                return
-        
-        # If no point found, add a new one
-        for ch in channels_to_modify:
-            self.curves[ch].append((x, y))
-        
-        # Update the plot
-        self.update_plot()
-        
-        # Notify of changes
-        self.callback(sender, app_data, None)
-    
     def on_global_drag(self, sender, app_data):
         """Global drag handler for better drag support"""
         # Only handle drag if we have a point being dragged and mouse button is still pressed

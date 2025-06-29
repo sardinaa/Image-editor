@@ -34,43 +34,6 @@ class DisplayService:
         self.image_offset_y: int = 0
         self._updating_display = False
         
-    def update_image_display(self, processed_image: np.ndarray, crop_rotate_ui=None) -> bool:
-        """
-        Update the image display with current processed image.
-        
-        Args:
-            processed_image: The processed image to display
-            crop_rotate_ui: Optional CropRotateUI instance for crop mode handling
-            
-        Returns:
-            bool: True if update successful, False otherwise
-        """
-        if self._updating_display:
-            return False
-        
-        self._updating_display = True
-        try:
-            if processed_image is None:
-                return False
-            
-            # Check if crop mode is active - if so, let CropRotateUI handle texture updates
-            crop_mode_active = safe_item_check("crop_mode") and dpg.get_value("crop_mode")
-            if crop_mode_active and crop_rotate_ui:
-                # Update the CropRotateUI's original image first
-                crop_rotate_ui.original_image = processed_image.copy()
-                # Let CropRotateUI handle the texture update
-                crop_rotate_ui.update_image(None, None, None)
-                return True
-            
-            # Use our own texture update for non-crop modes
-            return self.update_texture(processed_image)
-            
-        except Exception as e:
-            print(f"Error updating image display: {e}")
-            traceback.print_exc()
-            return False
-        finally:
-            self._updating_display = False
     
     def update_texture(self, image: np.ndarray, x_axis_tag: str = "x_axis", y_axis_tag: str = "y_axis") -> bool:
         """
@@ -344,23 +307,6 @@ class DisplayService:
             
         except Exception as e:
             print(f"Error updating axis limits: {e}")
-    
-    def get_texture_info(self) -> dict:
-        """
-        Get current texture information.
-        
-        Returns:
-            dict: Current texture information
-        """
-        return {
-            'texture_tag': self.current_texture_tag,
-            'texture_width': self.current_texture_width,
-            'texture_height': self.current_texture_height,
-            'orig_w': self.orig_w,
-            'orig_h': self.orig_h,
-            'image_offset_x': self.image_offset_x,
-            'image_offset_y': self.image_offset_y
-        }
     
     def cleanup(self) -> None:
         """Clean up display service resources."""

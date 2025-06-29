@@ -51,10 +51,6 @@ class ImageService:
         """Get the current loaded image."""
         return self.current_image
     
-    def get_current_path(self) -> Optional[str]:
-        """Get the path of the current image."""
-        return self.current_image_path
-    
     def get_processed_image(self) -> Optional[np.ndarray]:
         """Get the processed image from the image processor."""
         if self.image_processor:
@@ -147,46 +143,10 @@ class MaskService:
             return True
         return False
     
-    def enable_mask_editing(self, mask_index: int, global_params: Dict[str, Any]) -> bool:
-        """Enable editing for a specific mask."""
-        if 0 <= mask_index < len(self.layer_masks):
-            # Save global parameters if not already saved
-            if not self.mask_editing_enabled:
-                self.global_parameters = global_params.copy()
-            
-            # Save current mask parameters if switching masks
-            if self.mask_editing_enabled and self.current_mask_index != mask_index:
-                self.save_mask_parameters(self.current_mask_index, global_params)
-            
-            self.mask_editing_enabled = True
-            self.current_mask_index = mask_index
-            return True
-        return False
-    
-    def disable_mask_editing(self, current_params: Dict[str, Any]) -> Dict[str, Any]:
-        """Disable mask editing and return global parameters."""
-        if self.mask_editing_enabled and self.current_mask_index >= 0:
-            # Save current mask parameters
-            self.save_mask_parameters(self.current_mask_index, current_params)
-        
-        self.mask_editing_enabled = False
-        self.current_mask_index = -1
-        
-        # Return global parameters or current params if no global saved
-        return self.global_parameters if self.global_parameters else current_params
-    
     def save_mask_parameters(self, mask_index: int, parameters: Dict[str, Any]) -> None:
         """Save parameters for a specific mask."""
         if 0 <= mask_index < len(self.layer_masks):
             self.mask_parameters[mask_index] = parameters.copy()
-    
-    def load_mask_parameters(self, mask_index: int) -> Optional[Dict[str, Any]]:
-        """Load parameters for a specific mask."""
-        return self.mask_parameters.get(mask_index)
-    
-    def get_mask_count(self) -> int:
-        """Get the number of masks."""
-        return len(self.layer_masks)
     
     def get_masks(self) -> List[Dict[str, Any]]:
         """Get all masks."""
@@ -195,7 +155,6 @@ class MaskService:
     def get_mask_names(self) -> List[str]:
         """Get all mask names."""
         return self.mask_names
-
 
 class SegmentationService:
     """Service for managing segmentation operations."""
@@ -324,21 +283,6 @@ class SegmentationService:
         """Disable segmentation mode."""
         self.segmentation_mode = False
         self.pending_selection = None
-    
-    def set_pending_selection(self, selection: Dict[str, Any]) -> None:
-        """Set pending segmentation selection."""
-        self.pending_selection = selection
-    
-    def get_pending_selection(self) -> Optional[Dict[str, Any]]:
-        """Get pending segmentation selection."""
-        return self.pending_selection
-    
-    def validate_segmentation_requirements(self, crop_rotate_ui=None) -> bool:
-        """Validate that segmentation requirements are met."""
-        if not crop_rotate_ui or not hasattr(crop_rotate_ui, "original_image"):
-            return False
-            
-        return True
     
     def transform_texture_coordinates_to_image(self, box, crop_rotate_ui):
         """Transform texture coordinates to image coordinates, accounting for flips."""
@@ -596,10 +540,6 @@ class ApplicationService:
     def clear_all_masks(self) -> None:
         """Clear all masks."""
         self.mask_service.clear_all_masks()
-    
-    def get_image_service(self) -> ImageService:
-        """Get the image service."""
-        return self.image_service
     
     def get_mask_service(self) -> MaskService:
         """Get the mask service."""

@@ -39,10 +39,6 @@ class EventCoordinator:
         self._reset_parameter_override = {}  # Store override values during reset
         self._parameter_callbacks = {}
         
-    def register_parameter_callback(self, callback_name: str, callback: Callable):
-        """Register a parameter change callback."""
-        self._parameter_callbacks[callback_name] = callback
-        
     def handle_parameter_change(self, sender, app_data, user_data):
         """
         Handle parameter changes from tool panel.
@@ -313,30 +309,6 @@ class EventCoordinator:
             'curves': curves_data
         }
     
-    def update_ui_after_mask_change(self):
-        """Update UI components after mask changes (delete/rename)."""
-        if not self.app_service:
-            return
-            
-        # Get current masks from service (no local storage)
-        masks = self.app_service.get_mask_service().get_masks()
-        mask_names = self.app_service.get_mask_service().get_mask_names()
-        
-        # Update tool panel with current masks
-        if self.main_window.tool_panel:
-            self.main_window.tool_panel.update_masks(masks, mask_names)
-        
-        # Re-create all overlays to fix indexing
-        self.main_window.update_mask_overlays(masks)
-    
-    def set_updating_display(self, updating: bool):
-        """Set the display updating flag to prevent recursive updates."""
-        self._updating_display = updating
-    
-    def is_updating_display(self) -> bool:
-        """Check if display is currently updating."""
-        return self._updating_display
-    
     def set_resetting_parameter(self, resetting: bool):
         """Set the parameter resetting flag to prevent interference during resets."""
         self._resetting_parameter = resetting
@@ -345,10 +317,6 @@ class EventCoordinator:
             # Clear override values when reset is complete
             if self._reset_parameter_override:
                 self._reset_parameter_override.clear()
-    
-    def is_resetting_parameter(self) -> bool:
-        """Check if a parameter is currently being reset."""
-        return self._resetting_parameter
     
     def set_parameter_override(self, param_name: str, value):
         """Set a parameter override value during reset operations."""

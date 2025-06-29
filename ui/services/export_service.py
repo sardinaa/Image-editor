@@ -27,14 +27,6 @@ class ExportService:
             'quality': 95,
             'path': os.path.expanduser("~")
         }
-        
-    def show_export_dialog(self):
-        """Show the export image modal dialog."""
-        if safe_item_check("export_modal"):
-            dpg.show_item("export_modal")
-        else:
-            self._create_export_modal()
-            dpg.show_item("export_modal")
     
     def _create_export_modal(self):
         """Create the comprehensive export modal dialog."""
@@ -345,24 +337,6 @@ class ExportService:
         """Close the export modal dialog."""
         if dpg.does_item_exist("export_modal"):
             dpg.hide_item("export_modal")
-    
-    def get_export_settings(self) -> Dict[str, Any]:
-        """Get current export settings."""
-        return self._export_settings.copy()
-    
-    def set_export_settings(self, settings: Dict[str, Any]):
-        """Set export settings programmatically."""
-        self._export_settings.update(settings)
-        
-        # Update UI if modal exists
-        if dpg.does_item_exist("export_filename"):
-            dpg.set_value("export_filename", self._export_settings['filename'])
-        if dpg.does_item_exist("export_format"):
-            dpg.set_value("export_format", self._export_settings['format'])
-        if dpg.does_item_exist("export_quality"):
-            dpg.set_value("export_quality", self._export_settings['quality'])
-        if dpg.does_item_exist("export_path"):
-            dpg.set_value("export_path", self._export_settings['path'])
     
     def export_current_image(self, filename: str = None, format_type: str = None, 
                            path: str = None, quality: int = None) -> bool:

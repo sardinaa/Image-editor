@@ -844,14 +844,6 @@ class MasksPanel(BasePanel):
         except Exception as e:
             self.main_window._update_status(f"Error saving parameters for mask {mask_index}: {e}")
 
-    def _clear_mask_parameters(self, mask_index: int):
-        """Clear saved parameters for a mask when they are committed to base image."""
-        try:
-            if mask_index in self.mask_params:
-                del self.mask_params[mask_index]
-        except Exception as e:
-            print(f"Error clearing parameters for mask {mask_index}: {e}")
-
     def _load_mask_parameters(self, mask_index: int):
         """Load saved parameters for a specific mask for persistent editing."""
         try:
@@ -1491,46 +1483,6 @@ class MasksPanel(BasePanel):
     def _is_mask_grouped(self, mask_index: int) -> bool:
         """Check if a mask is part of a group."""
         return mask_index in self.mask_to_group
-    
-    def _save_group_parameters(self, group_masks: Set[int]):
-        """Save parameters for all masks in a group."""
-        try:
-            current_params = self._get_current_parameters()
-            curves_data = self._get_current_curves_data()
-            
-            # Save the same parameters for all masks in the group
-            for mask_index in group_masks:
-                self.mask_params[mask_index] = {
-                    'parameters': current_params.copy(),
-                    'curves': curves_data
-                }
-            
-        except Exception as e:
-            print(f"Error saving group parameters: {e}")
-    
-    def _update_mask_display_names(self):
-        """Update mask display names to show group information."""
-        if not self.main_window or not hasattr(self.main_window, 'mask_names'):
-            return
-        
-        # Create updated display names that show group information
-        display_names = []
-        for idx in range(len(self.main_window.mask_names)):
-            base_name = self.main_window.mask_names[idx]
-            
-            if idx in self.mask_to_group:
-                group_id = self.mask_to_group[idx]
-                # Extract group number from group_id (e.g., "group_0" -> "0")
-                group_num = group_id.split('_')[-1] if '_' in group_id else group_id
-                display_name = f"[G{group_num}] {base_name}"
-            else:
-                display_name = base_name
-            
-            display_names.append(display_name)
-        
-        # Update the UI if the mask table exists
-        if UIStateManager.safe_item_exists("mask_table"):
-            self._refresh_mask_table_display(display_names)
     
     def _refresh_mask_table_display(self, display_names: List[str]):
         """Refresh the mask table display with updated names."""
