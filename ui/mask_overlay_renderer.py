@@ -1,10 +1,6 @@
-"""
-Mask Overlay Renderer - Handles mask visualization and overlay creation.
-Extracted from ProductionMainWindow to improve separation of concerns.
-"""
-
 import dearpygui.dearpygui as dpg
 import numpy as np
+import cv2
 import time
 import traceback
 from typing import List, Dict, Any, Optional
@@ -91,8 +87,6 @@ class MaskOverlayRenderer:
                 dpg.fit_axis_data(self.y_axis_tag)
             except Exception as e:
                 print(f"Error fitting axis data: {e}")
-        elif selected_index >= total_masks:
-            print(f"Selected mask {selected_index} doesn't exist (only {total_masks} masks available)")
     
     def cleanup_all_mask_overlays(self) -> None:
         """Clean up all mask overlays."""
@@ -271,9 +265,7 @@ class MaskOverlayRenderer:
             return None
     
     def _transform_mask(self, mask: np.ndarray, angle: float, flip_horizontal: bool, flip_vertical: bool, orig_w: int, orig_h: int) -> np.ndarray:
-        """Apply rotation and flip transformations to a mask."""
-        import cv2
-        
+        """Apply rotation and flip transformations to a mask."""       
         try:
             transformed_mask = mask.copy()
             
@@ -296,10 +288,7 @@ class MaskOverlayRenderer:
             return mask
     
     def _rotate_mask(self, mask: np.ndarray, angle: float, orig_w: int, orig_h: int) -> np.ndarray:
-        """Rotate a mask by the specified angle."""
-        import cv2
-        import math
-        
+        """Rotate a mask by the specified angle."""        
         try:
             # Convert boolean mask to uint8 for OpenCV
             mask_uint8 = (mask * 255).astype(np.uint8)
@@ -358,10 +347,6 @@ class MaskOverlayRenderer:
                 
                 if masks_enabled and not crop_mode_active and show_overlay:
                     self.show_selected_mask(0, total_masks)
-                    print(f"Successfully processed {successful_masks} mask overlays and showing first mask")
-                else:
-                    print(f"Successfully processed {successful_masks} mask overlays but not showing "
-                          f"(masks_enabled={masks_enabled}, crop_mode_active={crop_mode_active}, "
-                          f"show_overlay={show_overlay})")
+
             except Exception as e:
                 print(f"Error showing selected mask: {e}")

@@ -1,6 +1,5 @@
 # processing/file_manager.py
 import cv2
-import numpy as np
 import os
 import rawpy
 
@@ -24,7 +23,6 @@ def load_image(file_path):
     return image
 
 def save_image(file_path, image):
-    ext = os.path.splitext(file_path)[1].lower()
     # Prepare image for saving: if it has 4 channels (RGBA), convert to BGRA; if 3 channels, convert RGB->BGR.
     if len(image.shape) == 3:
         if image.shape[2] == 3:

@@ -3,7 +3,7 @@ UI Helper utilities for DearPyGUI components.
 Centralizes common UI patterns to reduce code duplication.
 """
 import dearpygui.dearpygui as dpg
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Callable
 
 
 class UIStateManager:
@@ -122,8 +122,6 @@ class MaskOverlayManager:
             series_tag = f"mask_series_{idx}"
             if UIStateManager.safe_configure_item(series_tag, show=False):
                 hidden_count += 1
-        if hidden_count > 0:
-            print(f"Hidden {hidden_count} mask overlays")
     
     @staticmethod
     def show_overlay(mask_index: int) -> bool:
@@ -144,7 +142,6 @@ class MaskOverlayManager:
         if dpg.does_item_exist(series_tag):
             try:
                 dpg.delete_item(series_tag)
-                print(f"Deleted mask overlay {mask_index}")
                 return True
             except Exception as e:
                 print(f"Error deleting mask overlay {mask_index}: {e}")

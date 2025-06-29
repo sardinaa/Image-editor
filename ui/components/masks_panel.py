@@ -6,6 +6,7 @@ import dearpygui.dearpygui as dpg
 from typing import Dict, Any, Set, List, Optional
 from ui.components.base_panel import BasePanel
 from utils.ui_helpers import UIStateManager, ControlGroupManager, MaskOverlayManager
+import traceback
 
 
 class MasksPanel(BasePanel):
@@ -19,6 +20,7 @@ class MasksPanel(BasePanel):
         self.selected_mask_indices: Set[int] = set()
         self.mask_checkboxes: Dict[int, str] = {}
         self.mask_editing_enabled = False
+        self._initial_masks_disabled = True
         self.current_mask_index = -1
         
         # Parameter tracking for persistent mask editing
@@ -56,11 +58,7 @@ class MasksPanel(BasePanel):
             'segmentation_mode': False,
             'show_mask_overlay': True
         }
-        
-        # Since masks start disabled by default, initialize control groups to disabled state
-        # Note: This will be properly applied after UI elements are created in draw()
-        self._initial_masks_disabled = True
-    
+
     def draw(self) -> None:
         """Draw the masks panel UI."""
         # Masks section with toggle
@@ -233,16 +231,13 @@ class MasksPanel(BasePanel):
         current = UIStateManager.safe_get_value("mask_section_toggle", False)
         UIStateManager.safe_configure_item("mask_panel", show=current)
         
-        # Handle mode conflicts
+        # If masks are being enabled, disable crop mode
         if current:
-            # If masks are being enabled, disable crop mode
             if (UIStateManager.safe_item_exists("crop_mode") and 
                 UIStateManager.safe_get_value("crop_mode", False)):
-                print("Disabling crop & rotate to enable masks")
                 UIStateManager.safe_set_value("crop_mode", False)
                 UIStateManager.safe_configure_item("crop_panel", show=False)
         
-        # Control editing mode based on masks checkbox state
         if not current and self.main_window:
             # When disabling masks, commit any current edits and disable mask editing
             if self.mask_editing_enabled:
@@ -256,7 +251,6 @@ class MasksPanel(BasePanel):
         # Save current mask parameters if we're switching from mask editing
         if self.mask_editing_enabled and self.current_mask_index >= 0:
             self._save_mask_parameters(self.current_mask_index)
-            print(f"💾 Saved parameters for mask {self.current_mask_index} before disabling masks")
         
         # Commit current edits before disabling masks
         if self.mask_editing_enabled:
@@ -267,19 +261,16 @@ class MasksPanel(BasePanel):
             # Use the modern MaskOverlayRenderer if available
             if hasattr(self.main_window, 'mask_overlay_renderer') and self.main_window.mask_overlay_renderer:
                 self.main_window.mask_overlay_renderer.cleanup_all_mask_overlays()
-                print("Hidden all mask overlays via MaskOverlayRenderer (masks disabled)")
             # Fallback to service-based approach
             elif self.main_window.app_service:
                 masks = self.main_window.app_service.get_mask_service().get_masks()
                 MaskOverlayManager.hide_all_overlays(len(masks))
-                print("Hidden all mask overlays via MaskOverlayManager (masks disabled)")
         
         # Disable segmentation mode
         if UIStateManager.safe_item_exists("segmentation_mode"):
             UIStateManager.safe_set_value("segmentation_mode", False)
             if hasattr(self.main_window, 'disable_segmentation_mode'):
                 self.main_window.disable_segmentation_mode()
-            print("Disabled segmentation mode (masks disabled)")
         
         # Ensure segmentation controls are hidden
         UIStateManager.safe_configure_item("segmentation_controls", show=False)
@@ -293,15 +284,13 @@ class MasksPanel(BasePanel):
         self.selected_mask_indices.clear()
         self.mask_editing_enabled = False
         self.current_mask_index = -1
-        print("🗑️ Cleared mask selection and editing state (UI and internal)")
         
         # Disable mask editing in the processor
         if self.main_window and self.main_window.app_service and self.main_window.app_service.image_service:
             processor = self.main_window.app_service.image_service.image_processor
             if processor:
                 processor.set_mask_editing(False)
-                print("🔄 Disabled mask editing in processor")
-        
+
         # Load saved global parameters (not defaults!)
         self._load_global_parameters()
         
@@ -312,9 +301,6 @@ class MasksPanel(BasePanel):
         # Force an immediate image update to show global editing mode
         if self.callback:
             self.callback(None, None, None)
-            print("🔄 Triggered image update for global editing mode")
-        
-        print("🌐 Successfully switched to global editing mode")
     
     def _clear_all_mask_selections(self):
         """Clear all mask selections and update UI synchronization."""
@@ -325,7 +311,6 @@ class MasksPanel(BasePanel):
         
         # Clear internal selection state
         self.selected_mask_indices.clear()
-        print("🗑️ Cleared all mask selections (UI and internal)")
         
         # Update group button label
         self._update_group_button_label()
@@ -338,7 +323,6 @@ class MasksPanel(BasePanel):
         # Check if masks should actually be enabled based on the checkbox state
         masks_enabled = UIStateManager.safe_get_value("mask_section_toggle", False)
         if not masks_enabled:
-            print("Skipping mask enable - checkbox is unchecked")
             return
         
         # Re-enable mask-related UI controls
@@ -363,19 +347,13 @@ class MasksPanel(BasePanel):
                  UIStateManager.safe_get_value("crop_mode", False))):
             # Show all available masks when re-enabling masks
             self._show_all_mask_overlays()
-            print("Restored mask overlays (masks enabled, crop mode not active)")
-        else:
-            print("Not restoring mask overlays - crop mode is active")
-        
-        print("🎭 Masks enabled with clean state")
-    
+
     def _auto_segment(self, sender, app_data, user_data):
         """Trigger automatic segmentation through application service."""
         # Check if masks are enabled
         masks_enabled = UIStateManager.safe_get_value("mask_section_toggle", True)
         
         if not masks_enabled:
-            print("Cannot perform auto segmentation when masks are disabled")
             return
         
         # Show loading indicator
@@ -384,7 +362,6 @@ class MasksPanel(BasePanel):
         # Use ApplicationService instead of going through main window
         if self.main_window and self.main_window.app_service:
             try:
-                print("🔄 Performing automatic segmentation via ApplicationService...")
                 masks, names = self.main_window.app_service.perform_automatic_segmentation()
                 
                 # Update the UI
@@ -394,22 +371,20 @@ class MasksPanel(BasePanel):
                 if self.main_window and hasattr(self.main_window, 'update_mask_overlays'):
                     self.main_window.update_mask_overlays(masks)
                 
-                print(f"✅ Auto segmentation completed: {len(masks)} masks created")
+                self.main_window._update_status(f"Auto segmentation completed: {len(masks)} masks created")
             except Exception as e:
-                print(f"❌ Auto segmentation failed: {e}")
-                self._update_status(f"Error: {str(e)}")
+                self.main_window._update_status(f"Auto segmentation failed: {str(e)}")
             finally:
                 # Always hide loading indicator when done
                 self._hide_segmentation_loading()
         else:
-            print("❌ ApplicationService not available for auto segmentation")
+            self.main_window._update_status("ApplicationService not available for auto segmentation")
             # Hide loading indicator if service not available
             self._hide_segmentation_loading()
     
     def _clear_all_masks(self, sender, app_data, user_data):
         """Clear all masks through application service."""
         if self.main_window and self.main_window.app_service:
-            print("🔄 Clearing all masks via ApplicationService...")
             self.main_window.app_service.clear_all_masks()
             
             # Update the UI
@@ -419,9 +394,7 @@ class MasksPanel(BasePanel):
             if hasattr(self.main_window, 'update_mask_overlays'):
                 self.main_window.update_mask_overlays([])
             
-            print("✅ All masks cleared")
-        else:
-            print("❌ ApplicationService not available for clearing masks")
+            self.main_window._update_status("✅ All masks cleared")
     
     def _toggle_segmentation_mode(self, sender, app_data, user_data):
         """Toggle unified box selection/segmentation mode."""
@@ -436,12 +409,10 @@ class MasksPanel(BasePanel):
                     # Disable conflicting modes
                     if UIStateManager.safe_item_exists("crop_mode"):
                         UIStateManager.safe_set_value("crop_mode", False)
-                    print("Real-time segmentation mode enabled")
                 else:
                     # Fallback to legacy box selection mode
                     if hasattr(self.main_window, 'toggle_box_selection_mode'):
                         self.main_window.toggle_box_selection_mode("segmentation_mode", True)
-                        print("Fallback to legacy box selection mode")
                     else:
                         UIStateManager.safe_set_value("segmentation_mode", False)
         else:
@@ -490,7 +461,7 @@ class MasksPanel(BasePanel):
                     if success:
                         # Disable segmentation mode
                         self.main_window.disable_segmentation_mode()
-                        self._update_status(message)
+                        self.main_window._update_status(message)
                         
                         # Update masks display
                         masks = self.main_window.app_service.get_mask_service().get_masks()
@@ -501,16 +472,13 @@ class MasksPanel(BasePanel):
                         if hasattr(self.main_window, 'update_mask_overlays'):
                             self.main_window.update_mask_overlays(masks)
                     else:
-                        self._update_status(message)
+                        self.main_window._update_status(message)
                         
             except Exception as e:
-                print(f"Error during segmentation confirmation: {e}")
-                self._update_status(f"Error: {str(e)}")
+                self.main_window._update_status(f"Error during segmentation confirmation: {str(e)}")
             finally:
-                # Always hide loading indicator when done
                 self._hide_segmentation_loading()
         else:
-            # Hide loading indicator if service not available
             self._hide_segmentation_loading()
         
         # Set segmentation mode to false
@@ -534,35 +502,27 @@ class MasksPanel(BasePanel):
                 self._update_mask_overlays_visibility()
                 if self.selected_mask_indices:
                     selected_list = list(self.selected_mask_indices)
-                    print(f"Showing mask overlays for selected masks: {selected_list}")
+                    self.main_window._update_status(f"Showing mask overlays for selected masks: {selected_list}")
                 elif len(masks) > 0:
                     if hasattr(self.main_window, 'show_selected_mask'):
                         self.main_window.show_selected_mask(0)
-                    print("Showing first mask overlay")
+                    self.main_window._update_status("Showing first mask overlay")
             else:
                 # Hide all mask overlays using the proper renderer
                 if hasattr(self.main_window, 'mask_overlay_renderer') and self.main_window.mask_overlay_renderer:
                     # Hide all masks by setting selected_index to -1
                     total_masks = len(masks)
                     self.main_window.mask_overlay_renderer.show_selected_mask(-1, total_masks)
-                    print("Hidden all mask overlays via MaskOverlayRenderer")
                 else:
                     # Fallback to old system
                     MaskOverlayManager.hide_all_overlays(len(masks))
-                    print("Hidden all mask overlays via MaskOverlayManager")
     
     def _delete_selected_masks(self, sender, app_data, user_data):
         """Delete selected masks via application service."""
         if not self.selected_mask_indices:
-            print("No masks selected for deletion")
+            self.main_window._update_status("No masks selected for deletion")
             return
-        
-        if not (self.main_window and self.main_window.app_service):
-            print("❌ ApplicationService not available for mask deletion")
-            return
-        
-        print(f"🔄 Deleting {len(self.selected_mask_indices)} masks via ApplicationService...")
-        
+               
         # Clean up group data for deleted masks and delete them
         for mask_index in sorted(self.selected_mask_indices, reverse=True):
             self._cleanup_group_data_for_deleted_mask(mask_index)
@@ -570,9 +530,9 @@ class MasksPanel(BasePanel):
             # Use ApplicationService to delete mask
             success = self.main_window.app_service.delete_mask(mask_index)
             if success:
-                print(f"✅ Deleted mask {mask_index}")
+                self.main_window._update_status(f"Deleted mask {mask_index}")
             else:
-                print(f"❌ Failed to delete mask {mask_index}")
+                self.main_window._update_status(f"Failed to delete mask {mask_index}")
         
         # Get updated masks from service
         masks = self.main_window.app_service.get_mask_service().get_masks()
@@ -590,13 +550,11 @@ class MasksPanel(BasePanel):
         
         # Update group button label
         self._update_group_button_label()
-        
-        print(f"✅ Mask deletion completed")
     
     def _rename_selected_mask(self, sender, app_data, user_data):
         """Rename the selected mask (single selection only)."""
         if len(self.selected_mask_indices) != 1:
-            print("Please select exactly one mask to rename")
+            self.main_window._update_status("Please select exactly one mask to rename")
             return
         
         mask_index = next(iter(self.selected_mask_indices))
@@ -652,12 +610,9 @@ class MasksPanel(BasePanel):
         
         new_name = UIStateManager.safe_get_value("mask_rename_input", "")
         if new_name and new_name.strip() and self.main_window and self.main_window.app_service:
-            print(f"🔄 Renaming mask {mask_index} to '{new_name.strip()}' via ApplicationService...")
-            
-            # Use ApplicationService to rename mask
             success = self.main_window.app_service.rename_mask(mask_index, new_name.strip())
             if success:
-                print(f"✅ Renamed mask {mask_index} to '{new_name.strip()}'")
+                self.main_window._update_status(f"Renamed mask {mask_index} to '{new_name.strip()}'")
                 
                 # Get updated masks from service
                 masks = self.main_window.app_service.get_mask_service().get_masks()
@@ -666,7 +621,7 @@ class MasksPanel(BasePanel):
                 # Update UI
                 self.update_masks(masks, names)
             else:
-                print(f"❌ Failed to rename mask {mask_index}")
+                self.main_window._update_status(f"Failed to rename mask {mask_index}")
         
         # Close the window
         if UIStateManager.safe_item_exists("rename_mask_window"):
@@ -680,7 +635,7 @@ class MasksPanel(BasePanel):
         # Check if masks are enabled first
         masks_enabled = UIStateManager.safe_get_value("mask_section_toggle", True)
         if not masks_enabled:
-            print("Not showing mask overlays - masks are disabled")
+            self.main_window._update_status("Not showing mask overlays - masks are disabled")
             return
         
         show_overlay = UIStateManager.safe_get_value("show_mask_overlay", True)
@@ -690,7 +645,6 @@ class MasksPanel(BasePanel):
         # Don't show overlays if crop mode is active
         if (UIStateManager.safe_item_exists("crop_mode") and 
             UIStateManager.safe_get_value("crop_mode", False)):
-            print("Not showing mask overlays - crop mode is active")
             return
         
         # Use the proper mask overlay renderer instead of MaskOverlayManager
@@ -700,15 +654,13 @@ class MasksPanel(BasePanel):
                 selected_index = next(iter(self.selected_mask_indices))
                 total_masks = len(self.main_window.app_service.get_mask_service().get_masks()) if self.main_window.app_service else 0
                 self.main_window.mask_overlay_renderer.show_selected_mask(selected_index, total_masks)
-                print(f"Showing mask {selected_index} via MaskOverlayRenderer")
             else:
                 # Hide all masks if multiple selected or none selected
                 total_masks = len(self.main_window.app_service.get_mask_service().get_masks()) if self.main_window.app_service else 0
                 for i in range(total_masks):
                     self.main_window.mask_overlay_renderer.show_selected_mask(-1, total_masks)  # -1 means hide all
-                print("Hidden all mask overlays - multiple or no selection")
         else:
-            print("MaskOverlayRenderer not available, falling back to MaskOverlayManager")
+
             # Fallback to old system if renderer not available
             if hasattr(self.main_window, 'layer_masks'):
                 MaskOverlayManager.hide_all_overlays(len(self.main_window.layer_masks))
@@ -719,7 +671,6 @@ class MasksPanel(BasePanel):
         # Save current mask parameters if we're switching away from a mask
         if self.mask_editing_enabled and self.current_mask_index >= 0:
             self._save_mask_parameters(self.current_mask_index)
-            print(f"💾 Saved parameters for mask {self.current_mask_index} before disabling mask editing")
         
         # Commit current mask edits to base image before disabling
         self._commit_current_edits_to_base()
@@ -729,7 +680,6 @@ class MasksPanel(BasePanel):
             processor = self.main_window.app_service.image_service.image_processor
             if processor:
                 processor.set_mask_editing(False)
-                print("Disabled mask editing in processor")
         
         # Reset mask editing state
         self.mask_editing_enabled = False
@@ -742,7 +692,7 @@ class MasksPanel(BasePanel):
         if self.callback:
             self.callback(None, None, None)
         
-        print("🌐 Switched to global editing mode")
+        self.main_window._update_status("🌐 Switched to global editing mode")
     
     def _commit_current_edits_to_base(self):
         """Commit current edits to the base image for cumulative editing."""
@@ -767,8 +717,6 @@ class MasksPanel(BasePanel):
                     'parameters': current_params.copy(),
                     'curves': curves_data
                 }
-                
-                print(f"💾 Committed parameters for mask {self.current_mask_index} (keeping persistent for readjustment)")
             
             # Get the image processor
             image_service = self.main_window.app_service.image_service
@@ -791,11 +739,8 @@ class MasksPanel(BasePanel):
                 processor.grain = 0
                 processor.temperature = 0
                 
-                print("✓ Committed current edits to base image and reset processor parameters")
-                
         except Exception as e:
-            print(f"Error committing edits to base: {e}")
-            import traceback
+            self.main_window._update_status(f"Error committing edits to base: {e}")
             traceback.print_exc()
     
     def _get_current_parameters(self):
@@ -809,9 +754,6 @@ class MasksPanel(BasePanel):
             # Fallback: get parameters directly from tool panel
             elif self.main_window and hasattr(self.main_window, 'tool_panel') and self.main_window.tool_panel:
                 params = self.main_window.tool_panel.get_all_parameters()
-                print(f"📊 Fallback: Collected parameters directly from tool panel")
-            else:
-                print("⚠️ No parameter collection method available")
         except Exception as e:
             print(f"Error collecting current parameters: {e}")
         return params
@@ -827,7 +769,6 @@ class MasksPanel(BasePanel):
                 # Also try to get curves from the tool panel's curves attribute
                 elif tool_panel and hasattr(tool_panel, 'curves'):
                     curves_data = tool_panel.curves
-                    print(f"📊 Got curves data from tool panel curves attribute")
         except Exception as e:
             print(f"Error getting curves data: {e}")
         return curves_data
@@ -837,9 +778,7 @@ class MasksPanel(BasePanel):
         if not self.main_window or not self.main_window.tool_panel:
             return
         
-        try:
-            print("🔄 Resetting UI parameters to defaults...")
-            
+        try:           
             # Temporarily disable callbacks to prevent triggering while resetting
             tool_panel = self.main_window.tool_panel
             tool_panel.disable_parameter_callbacks()
@@ -879,10 +818,10 @@ class MasksPanel(BasePanel):
             # Re-enable callbacks
             tool_panel.enable_parameter_callbacks()
             
-            print("✅ UI parameters reset to defaults")
+            self.main_window._update_status("✅ UI parameters reset to defaults")
             
         except Exception as e:
-            print(f"Error resetting UI parameters: {e}")
+            self.main_window._update_status(f"Error resetting UI parameters: {e}")
             # Make sure to re-enable callbacks even if there's an error
             if tool_panel:
                 tool_panel.enable_parameter_callbacks()
@@ -900,17 +839,16 @@ class MasksPanel(BasePanel):
                 'curves': curves_data
             }
             
-            print(f"💾 Saved parameters for mask {mask_index}: {len(current_params)} params, curves: {curves_data is not None}")
+            self.main_window._update_status(f"💾 Saved parameters for mask {mask_index}: {len(current_params)} params, curves: {curves_data is not None}")
             
         except Exception as e:
-            print(f"Error saving parameters for mask {mask_index}: {e}")
+            self.main_window._update_status(f"Error saving parameters for mask {mask_index}: {e}")
 
     def _clear_mask_parameters(self, mask_index: int):
         """Clear saved parameters for a mask when they are committed to base image."""
         try:
             if mask_index in self.mask_params:
                 del self.mask_params[mask_index]
-                print(f"🗑️ Cleared saved parameters for mask {mask_index} (committed to base image)")
         except Exception as e:
             print(f"Error clearing parameters for mask {mask_index}: {e}")
 
@@ -924,8 +862,6 @@ class MasksPanel(BasePanel):
                 saved_curves = saved_data.get('curves')
                 
                 if saved_params or saved_curves:
-                    print(f"📂 Loading persistent parameters for mask {mask_index}...")
-                    
                     # Temporarily disable callbacks to prevent triggering during load
                     tool_panel = self.main_window.tool_panel
                     tool_panel.disable_parameter_callbacks()
@@ -938,7 +874,6 @@ class MasksPanel(BasePanel):
                         if processor:
                             # Restore base image to the state before this mask was first edited
                             processor.base_image = self.mask_base_image_states[mask_index].copy()
-                            print(f"🔄 Restored base image to pre-edit state for mask {mask_index}")
                     
                     # Apply saved parameters to UI controls first
                     for param_name, value in saved_params.items():
@@ -966,7 +901,6 @@ class MasksPanel(BasePanel):
                             processor.texture = 0
                             processor.grain = 0
                             processor.temperature = 0
-                            print(f"🔄 Reset processor to defaults - UI values will be applied via callbacks for mask {mask_index}")
                     
                     # Re-enable callbacks
                     tool_panel.enable_parameter_callbacks()
@@ -974,13 +908,8 @@ class MasksPanel(BasePanel):
                     # Trigger parameter update to apply the loaded UI values to the processor
                     if self.callback:
                         self.callback(None, None, None)
-                        print(f"🔄 Triggered parameter update to apply loaded UI values for mask {mask_index}")
-                    
-                    print(f"✅ Loaded persistent parameters for mask {mask_index} (base image restored to prevent double-application)")
                     return
             
-            # No saved parameters, reset to defaults
-            print(f"📝 No saved parameters for mask {mask_index}, using defaults")
             self._reset_ui_parameters_to_defaults()
             
         except Exception as e:
@@ -1002,10 +931,10 @@ class MasksPanel(BasePanel):
                 'curves': curves_data
             }
             
-            print(f"💾 Saved global parameters: {len(current_params)} params, curves: {curves_data is not None}")
+            self.main_window._update_status(f"💾 Saved global parameters: {len(current_params)} params, curves: {curves_data is not None}")
             
         except Exception as e:
-            print(f"Error saving global parameters: {e}")
+            self.main_window._update_status(f"Error saving global parameters: {e}")
     
     def _load_global_parameters(self):
         """Load saved global editing parameters."""
@@ -1014,9 +943,7 @@ class MasksPanel(BasePanel):
                 saved_params = self.global_params.get('parameters', {})
                 saved_curves = self.global_params.get('curves')
                 
-                if saved_params or saved_curves:
-                    print(f"📂 Loading saved global parameters...")
-                    
+                if saved_params or saved_curves:                    
                     # Temporarily disable callbacks
                     tool_panel = self.main_window.tool_panel
                     tool_panel.disable_parameter_callbacks()
@@ -1032,14 +959,10 @@ class MasksPanel(BasePanel):
                     
                     # Re-enable callbacks
                     tool_panel.enable_parameter_callbacks()
-                    
-                    print(f"✅ Loaded global parameters")
                     return
-            
-            print(f"📝 No saved global parameters, keeping current values")
-            
+        
         except Exception as e:
-            print(f"Error loading global parameters: {e}")
+            self.main_window._update_status(f"Error loading global parameters: {e}")
             # Make sure to re-enable callbacks even if there's an error
             if self.main_window and self.main_window.tool_panel:
                 self.main_window.tool_panel.enable_parameter_callbacks()
@@ -1054,9 +977,7 @@ class MasksPanel(BasePanel):
     
     def update_masks(self, masks: List[Dict[str, Any]], mask_names: List[str] = None):
         """Update the mask table with new masks."""
-        try:
-            print(f"MasksPanel: Updating mask table with {len(masks)} masks")
-            
+        try:           
             # Create mask entries with proper names
             if mask_names and len(mask_names) >= len(masks):
                 base_names = mask_names[:len(masks)]
@@ -1073,12 +994,7 @@ class MasksPanel(BasePanel):
                 else:
                     display_name = base_name
                 display_names.append(display_name)
-            
-            # Check if mask table exists
-            if not UIStateManager.safe_item_exists("mask_table"):
-                print("Mask table does not exist, cannot update masks")
-                return
-                
+                            
             # First, delete all existing rows
             # Need to create a list first because we'll be modifying as we iterate
             rows_to_delete = []
@@ -1141,12 +1057,9 @@ class MasksPanel(BasePanel):
             
             # Update group button label
             self._update_group_button_label()
-                
-            print(f"Successfully updated mask table with {len(display_names)} items")
             
         except Exception as e:
             print(f"Error in MasksPanel.update_masks: {e}")
-            import traceback
             traceback.print_exc()
     
     def _create_row_callback(self, mask_index: int):
@@ -1158,7 +1071,6 @@ class MasksPanel(BasePanel):
         # Check if masks are enabled first - prevent interaction when disabled
         masks_enabled = UIStateManager.safe_get_value("mask_section_toggle", True)
         if not masks_enabled:
-            print(f"Ignoring mask row click - masks are disabled")
             return
         
         # Check if Ctrl is pressed for multiple selection
@@ -1176,14 +1088,12 @@ class MasksPanel(BasePanel):
                         if idx in self.mask_checkboxes:
                             selectable_tag = self.mask_checkboxes[idx]
                             UIStateManager.safe_set_value(selectable_tag, False)
-                    print(f"Deselected group {group_id} with masks {group_masks}")
                 else:
                     # Single mask deselection
                     self.selected_mask_indices.discard(mask_index)
                     if mask_index in self.mask_checkboxes:
                         selectable_tag = self.mask_checkboxes[mask_index]
                         UIStateManager.safe_set_value(selectable_tag, False)
-                    print(f"Deselected mask {mask_index}")
             else:
                 # If mask is grouped, select entire group
                 if self._is_mask_grouped(mask_index):
@@ -1194,9 +1104,8 @@ class MasksPanel(BasePanel):
                     if mask_index in self.mask_checkboxes:
                         selectable_tag = self.mask_checkboxes[mask_index]
                         UIStateManager.safe_set_value(selectable_tag, True)
-                    print(f"Selected mask {mask_index}")
-                
-            print(f"Total selected: {len(self.selected_mask_indices)}")
+                    self.main_window._update_status(f"Selected mask {mask_index}")
+
         else:
             # Single selection mode - clear all other selections
             for idx in list(self.selected_mask_indices):
@@ -1215,8 +1124,7 @@ class MasksPanel(BasePanel):
                 if mask_index in self.mask_checkboxes:
                     selectable_tag = self.mask_checkboxes[mask_index]
                     UIStateManager.safe_set_value(selectable_tag, True)
-                print(f"Quick selected mask {mask_index}")
-        
+
         # Update button label based on selection
         self._update_group_button_label()
         
@@ -1229,7 +1137,6 @@ class MasksPanel(BasePanel):
         # Check if masks are enabled first - prevent editing when disabled
         masks_enabled = UIStateManager.safe_get_value("mask_section_toggle", True)
         if not masks_enabled:
-            print("Not applying mask editing logic - masks are disabled")
             # Ensure mask editing is disabled
             if self.mask_editing_enabled:
                 self._disable_mask_editing()
@@ -1245,7 +1152,6 @@ class MasksPanel(BasePanel):
             if self.mask_editing_enabled:
                 # Switching from mask editing to global editing
                 self._disable_mask_editing()
-                print("Switched to global editing mode")
         else:
             # Multiple masks selected - check if they're all in the same group
             if self._are_selected_masks_grouped():
@@ -1256,7 +1162,7 @@ class MasksPanel(BasePanel):
                 if self.mask_editing_enabled:
                     self._disable_mask_editing()
                     self._load_global_parameters()
-                print(f"Multiple masks selected ({len(self.selected_mask_indices)}), mask editing disabled")
+                self.main_window._update_status(f"Multiple masks selected ({len(self.selected_mask_indices)}), mask editing disabled")
     
     def _are_selected_masks_grouped(self) -> bool:
         """Check if all selected masks belong to the same group."""
@@ -1286,19 +1192,15 @@ class MasksPanel(BasePanel):
         representative_mask = min(self.selected_mask_indices)
         group_id = self.mask_to_group.get(representative_mask)
         
-        print(f"Enabling group editing for group {group_id} with {len(self.selected_mask_indices)} masks")
-        
         # Save current mask parameters if we're switching from another mask
         if self.mask_editing_enabled and self.current_mask_index != representative_mask and self.current_mask_index >= 0:
             self._save_mask_parameters(self.current_mask_index)
             self._commit_current_edits_to_base()
-            print(f"💾 Saved and committed parameters for mask {self.current_mask_index} when switching away")
-        
+
         # Save global parameters if coming from global editing
         if not self.mask_editing_enabled:
             self._save_global_parameters()
             self._commit_current_edits_to_base()
-            print(f"📝 Committed global edits before switching to group editing")
         
         # Enable group editing mode
         self.mask_editing_enabled = True
@@ -1313,7 +1215,6 @@ class MasksPanel(BasePanel):
                 if processor:
                     # Enable mask editing with the combined mask
                     processor.set_mask_editing(True, combined_mask)
-                    print(f"Enabled group editing with combined mask for {len(self.selected_mask_indices)} masks")
                     
                     # Capture base image state for the representative mask
                     self._capture_base_image_state(representative_mask)
@@ -1330,9 +1231,7 @@ class MasksPanel(BasePanel):
         if not self.main_window or not self.main_window.app_service:
             return None
         
-        try:
-            import numpy as np
-            
+        try:            
             mask_service = self.main_window.app_service.get_mask_service()
             masks = mask_service.get_masks()
             combined_mask = None
@@ -1365,7 +1264,6 @@ class MasksPanel(BasePanel):
                 self._save_mask_parameters(self.current_mask_index)
                 # Always commit when switching away from a mask to preserve changes
                 self._commit_current_edits_to_base()
-                print(f"💾 Saved and committed parameters for mask {self.current_mask_index} when switching away")
             
             # Check if this mask has been edited before
             mask_previously_edited = mask_index in self.mask_base_image_states
@@ -1376,7 +1274,6 @@ class MasksPanel(BasePanel):
             if not self.mask_editing_enabled:
                 # Coming from global editing - commit global changes
                 self._commit_current_edits_to_base()
-                print(f"📝 Committed global edits before switching to mask {mask_index}")
             
             # CRITICAL FIX: Restore proper base image state BEFORE capturing/editing
             # If this mask was previously edited, restore its clean base state first
@@ -1385,7 +1282,6 @@ class MasksPanel(BasePanel):
                 processor = self.main_window.app_service.image_service.image_processor
                 if processor:
                     processor.base_image = self.mask_base_image_states[mask_index].copy()
-                    print(f"🔄 Restored clean base image state for mask {mask_index} before editing")
             
             # Capture base image state before editing this mask (for reset functionality)
             # Only capture if not already captured - this preserves the original clean state
@@ -1409,8 +1305,6 @@ class MasksPanel(BasePanel):
                             processor.set_mask_editing(True, mask)
                             self.mask_editing_enabled = True
                             self.current_mask_index = mask_index
-                            
-                            print(f"Enabled mask editing for mask {mask_index}")
                             
                             # Load mask-specific parameters (persistent values for readjustment)
                             # This loads the saved UI values so user can continue editing from where they left off
@@ -1441,7 +1335,6 @@ class MasksPanel(BasePanel):
             
             # Save the current base image state
             self.mask_base_image_states[mask_index] = processor.base_image.copy()
-            print(f"💾 Captured base image state for mask {mask_index} (for reset functionality)")
             
         except Exception as e:
             print(f"Error capturing base image state for mask {mask_index}: {e}")
@@ -1457,7 +1350,6 @@ class MasksPanel(BasePanel):
     def _toggle_group_selected_masks(self, sender, app_data, user_data):
         """Toggle group/ungroup for selected masks."""
         if not self.selected_mask_indices:
-            print("No masks selected for grouping operation")
             return
         
         # Check if any selected masks are already grouped
@@ -1477,7 +1369,7 @@ class MasksPanel(BasePanel):
     def _group_masks(self, mask_indices: Set[int]):
         """Group the specified masks together."""
         if len(mask_indices) < 2:
-            print("Need at least 2 masks to create a group")
+            self.main_window._update_status("Need at least 2 masks to create a group")
             return
         
         # Check if any masks are already in groups
@@ -1500,7 +1392,7 @@ class MasksPanel(BasePanel):
             for idx in mask_indices:
                 self.mask_to_group[idx] = group_id
             
-            print(f"Added masks {mask_indices} to existing group {group_id}")
+            self.main_window._update_status(f"Added masks {mask_indices} to existing group {group_id}")
         else:
             # Create new group
             group_id = f"group_{self.next_group_id}"
@@ -1510,7 +1402,7 @@ class MasksPanel(BasePanel):
             for idx in mask_indices:
                 self.mask_to_group[idx] = group_id
             
-            print(f"Created new group {group_id} with masks {mask_indices}")
+            self.main_window._update_status(f"Created new group {group_id} with masks {mask_indices}")
     
     def _ungroup_masks(self, mask_indices: Set[int]):
         """Ungroup the specified masks."""
@@ -1535,7 +1427,7 @@ class MasksPanel(BasePanel):
         for group_id in groups_to_remove:
             del self.mask_groups[group_id]
         
-        print(f"Ungrouped masks {mask_indices}")
+        self.main_window._update_status(f"Ungrouped masks {mask_indices}")
     
     def _merge_groups(self, target_group_id: str, source_group_id: str):
         """Merge source group into target group."""
@@ -1553,7 +1445,7 @@ class MasksPanel(BasePanel):
         # Remove source group
         del self.mask_groups[source_group_id]
         
-        print(f"Merged group {source_group_id} into {target_group_id}")
+        self.main_window._update_status(f"Merged group {source_group_id} into {target_group_id}")
     
     def _update_group_button_label(self):
         """Update the group/ungroup button label based on current selection."""
@@ -1595,8 +1487,6 @@ class MasksPanel(BasePanel):
             if idx in self.mask_checkboxes:
                 selectable_tag = self.mask_checkboxes[idx]
                 UIStateManager.safe_set_value(selectable_tag, True)
-        
-        print(f"Expanded selection to include entire group {group_id}: {group_masks}")
     
     def _is_mask_grouped(self, mask_index: int) -> bool:
         """Check if a mask is part of a group."""
@@ -1614,8 +1504,6 @@ class MasksPanel(BasePanel):
                     'parameters': current_params.copy(),
                     'curves': curves_data
                 }
-            
-            print(f"💾 Saved group parameters for masks {group_masks}")
             
         except Exception as e:
             print(f"Error saving group parameters: {e}")
@@ -1653,8 +1541,6 @@ class MasksPanel(BasePanel):
                 if UIStateManager.safe_item_exists(selectable_tag):
                     UIStateManager.safe_configure_item(selectable_tag, label=display_name)
             
-            print(f"Updated mask table display with group indicators")
-            
         except Exception as e:
             print(f"Error refreshing mask table display: {e}")
     
@@ -1676,7 +1562,6 @@ class MasksPanel(BasePanel):
                     if remaining_mask in self.mask_to_group:
                         del self.mask_to_group[remaining_mask]
                 del self.mask_groups[group_id]
-                print(f"Dissolved group {group_id} (insufficient masks)")
         
         # Remove from mask-to-group mapping
         if mask_index in self.mask_to_group:
@@ -1708,11 +1593,6 @@ class MasksPanel(BasePanel):
         
         self.mask_to_group = new_mask_to_group
         self.mask_groups = new_mask_groups
-
-    def _update_status(self, message: str):
-        """Update status text if it exists."""
-        if dpg.does_item_exist("status_text"):
-            dpg.configure_item("status_text", default_value=message)
     
     def _show_all_mask_overlays(self):
         """Show all mask overlays when re-enabling masks."""
@@ -1729,25 +1609,17 @@ class MasksPanel(BasePanel):
                     self.main_window.mask_overlay_renderer.update_mask_overlays(
                         masks, self.main_window.crop_rotate_ui
                     )
-                    print(f"Updated and showing all {len(masks)} mask overlays via MaskOverlayRenderer")
-                else:
-                    print("No masks available to show")
-            else:
-                print("Required components not available for mask overlay update")
         else:
-            print("MaskOverlayRenderer not available for showing all overlays")
             # Fallback to old system if renderer not available
             if self.main_window.app_service:
                 masks = self.main_window.app_service.get_mask_service().get_masks()
                 all_indices = list(range(len(masks)))
                 MaskOverlayManager.show_selected_overlays(all_indices)
-                print(f"Showing all {len(masks)} mask overlays via MaskOverlayManager")
     
     def _show_segmentation_loading(self):
         """Show the segmentation loading indicator."""
         try:
             UIStateManager.safe_configure_item("segmentation_loading_group", show=True)
-            print("🔄 Showing segmentation loading indicator")
         except Exception as e:
             print(f"Error showing segmentation loading indicator: {e}")
     
@@ -1755,6 +1627,5 @@ class MasksPanel(BasePanel):
         """Hide the segmentation loading indicator."""
         try:
             UIStateManager.safe_configure_item("segmentation_loading_group", show=False)
-            print("✅ Hidden segmentation loading indicator")
         except Exception as e:
             print(f"Error hiding segmentation loading indicator: {e}")

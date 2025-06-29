@@ -137,7 +137,7 @@ class HistogramPanel:
             # Histogram plot - use available width with small right margin
             plot_width = self.plot_width - 5 if self.plot_width > 0 else -5  # Leave 15px right margin
             with dpg.plot(tag=self.plot_tag, height=self.plot_height, width=plot_width,
-                         no_mouse_pos=True, no_box_select=True) as plot:
+                         no_mouse_pos=True, no_box_select=True):
                 # Add axes
                 dpg.add_plot_axis(dpg.mvXAxis, label="", tag=self.x_axis_tag, no_gridlines=True, no_tick_labels=True)
                 dpg.add_plot_axis(dpg.mvYAxis, label="", tag=self.y_axis_tag, no_gridlines=True, no_tick_labels=True)
@@ -242,7 +242,3 @@ class HistogramPanel:
     def show(self):
         """Show the histogram panel"""
         self.create_panel()
-    
-    def hide(self):
-        """Hide the histogram panel (not needed as it's always visible)"""
-        pass

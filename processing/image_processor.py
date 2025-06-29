@@ -1,6 +1,5 @@
 import cv2
 import numpy as np
-import math
 
 class ImageProcessor:
     def __init__(self, image):
@@ -75,8 +74,6 @@ class ImageProcessor:
         
         # Clear optimization cache when base image changes
         self.clear_optimization_cache()
-        
-        print(f"Committed current edits (including curves) to base image")
     
     def set_mask_editing(self, enabled, mask=None):
         """
@@ -86,42 +83,30 @@ class ImageProcessor:
             enabled (bool): Whether to enable mask editing
             mask (numpy.ndarray): Binary mask array (boolean or 0-255) or None to disable
         """
-        print(f"DEBUG: set_mask_editing called - enabled: {enabled}, mask provided: {mask is not None}")
         self.mask_editing_enabled = enabled
         if enabled and mask is not None:
-            print(f"DEBUG: Original mask shape: {mask.shape}, dtype: {mask.dtype}, range: {mask.min()}-{mask.max()}")
             
             # Handle different mask formats
             if mask.dtype == bool:
                 # Boolean mask - convert to float32 0-1 range
                 self.current_mask = mask.astype(np.float32)
-                print(f"DEBUG: Converted boolean mask to float32")
             else:
                 # Ensure mask is binary and same dimensions as image
                 if len(mask.shape) == 3:
                     mask = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
-                    print(f"DEBUG: Converted to grayscale - shape: {mask.shape}")
                 
                 # Handle different numeric ranges
                 if mask.max() > 1:
                     # 0-255 range mask - normalize to 0-1
                     self.current_mask = (mask > 127).astype(np.float32)
-                    print(f"DEBUG: Converted 0-255 mask to 0-1 range")
                 else:
                     # Already 0-1 range
                     self.current_mask = mask.astype(np.float32)
-                    print(f"DEBUG: Used existing 0-1 range mask")
             
-            print(f"DEBUG: Final mask shape: {self.current_mask.shape}, range: {self.current_mask.min()}-{self.current_mask.max()}")
-            unique_values = np.unique(self.current_mask)
-            print(f"DEBUG: Unique mask values: {unique_values}")
-            non_zero_pixels = np.sum(self.current_mask > 0)
-            total_pixels = self.current_mask.size
-            print(f"DEBUG: Mask coverage: {non_zero_pixels}/{total_pixels} pixels ({100*non_zero_pixels/total_pixels:.1f}%)")
         else:
             self.current_mask = None
             self.mask_editing_enabled = False
-            print(f"DEBUG: Mask editing disabled")
+
 
     def apply_all_edits(self):
         """
@@ -243,7 +228,6 @@ class ImageProcessor:
             cache_key = processing_order[start_index - 1]
             if cache_key in self.cached_states:
                 img = self.cached_states[cache_key].copy()
-                print(f"✓ Using cached state from '{cache_key}' for processing '{start_from}'")
             else:
                 # Instead of full processing fallback, try to find the most recent cache
                 available_cache_keys = [k for k in processing_order[:start_index] if k in self.cached_states]
@@ -252,14 +236,12 @@ class ImageProcessor:
                     best_cache_key = available_cache_keys[-1]
                     best_cache_index = processing_order.index(best_cache_key)
                     img = self.cached_states[best_cache_key].copy()
-                    print(f"✓ Cache miss for '{cache_key}', using '{best_cache_key}' instead")
                     # Update start_index to process from the available cache
                     start_index = best_cache_index + 1
                 else:
                     # No cache available, start from base
                     img = self.base_image.copy()
                     start_index = 0
-                    print(f"⚠ No cache available, starting from base image")
         else:
             img = self.base_image.copy()
         
@@ -364,7 +346,6 @@ class ImageProcessor:
             'highlights': 0, 'whites': 0, 'blacks': 0, 'saturation': 1.0,
             'texture': 0, 'grain': 0, 'temperature': 0, 'curves_data': None
         }
-        print("✓ Optimization cache cleared")
     
     def enable_mask_editing(self, mask=None):
         """
@@ -708,7 +689,7 @@ class ImageProcessor:
         img = np.clip(img * 255.0, 0, 255)
         return img.astype(np.uint8)
 
-    def apply_rgb_curves(self, image, curves, interpolation_mode="Linear"):
+    def apply_rgb_curves(self, image, curves, interpolation_mode="Spline"):
         """
         Applies custom RGB curves to the image.
         curves: a dict with keys 'r', 'g', 'b'. Each value is a list of control points [(x, y), ...]
@@ -750,7 +731,7 @@ class ImageProcessor:
             # Apply curves to the entire image
             return self._apply_curves_with_luminance(image, curves, interpolation_mode)
     
-    def _apply_curves_to_image(self, image, curves, interpolation_mode="Linear"):
+    def _apply_curves_to_image(self, image, curves, interpolation_mode="Spline"):
         """Helper method to apply curves to an image"""
         # Handle both RGB and RGBA images
         if image.shape[2] == 4:
@@ -779,9 +760,8 @@ class ImageProcessor:
         else:
             return cv2.merge([b, g, r])
     
-    def generate_lut_from_points(self, points, interpolation_mode="Linear"):
+    def generate_lut_from_points(self, points, interpolation_mode="Spline"):
         """Generate a lookup table from control points using specified interpolation"""
-        import numpy as np
         if len(points) < 2:
             return np.arange(256, dtype=np.uint8)
         
@@ -810,11 +790,8 @@ class ImageProcessor:
             
         return lut.astype(np.uint8)
 
-    def _apply_curves_with_luminance(self, image, curves, interpolation_mode="Linear"):
-        """Enhanced curves application with luminance support"""
-        import cv2
-        import numpy as np
-        
+    def _apply_curves_with_luminance(self, image, curves, interpolation_mode="Spline"):
+        """Enhanced curves application with luminance support"""        
         # Handle both RGB and RGBA images
         if image.shape[2] == 4:
             # RGBA image - split into RGB and alpha channels

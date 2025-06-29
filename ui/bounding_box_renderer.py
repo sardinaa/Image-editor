@@ -1,8 +1,3 @@
-"""
-Reusable bounding box component for various image editing features.
-Provides functionality for creating, resizing, and moving bounding boxes with handles.
-"""
-
 import cv2
 import numpy as np
 import dearpygui.dearpygui as dpg
@@ -154,9 +149,7 @@ class BoundingBoxRenderer:
             self.on_end_drag_callback = on_end_drag
     
     def screen_to_texture_coords(self, screen_x: float, screen_y: float) -> Tuple[float, float]:
-        """Convert screen coordinates to texture coordinates."""
-        print(f"COORD CONVERSION: Screen ({screen_x:.1f}, {screen_y:.1f})")
-        
+        """Convert screen coordinates to texture coordinates."""        
         # First try to get plot mouse position (if we're in a plot)
         try:
             if dpg.does_item_exist("image_plot"):
@@ -166,25 +159,18 @@ class BoundingBoxRenderer:
                     # We need to convert to image coordinate system (Y increases downward)
                     texture_x = plot_pos[0]
                     texture_y = self.texture_height - plot_pos[1]  # Invert Y coordinate
-                    print(f"COORD CONVERSION: Using plot coords - Plot: ({plot_pos[0]:.1f}, {plot_pos[1]:.1f}) -> Texture: ({texture_x:.1f}, {texture_y:.1f})")
                     return texture_x, texture_y
-                else:
-                    print("COORD CONVERSION: plot_pos is None")
-            else:
-                print("COORD CONVERSION: image_plot does not exist")
         except Exception as e:
             print(f"COORD CONVERSION: Plot conversion failed: {e}")
         
         # Fallback to panel-based conversion if plot coordinates aren't available
         if not dpg.does_item_exist(self.panel_id):
-            print(f"COORD CONVERSION: Panel {self.panel_id} does not exist, returning screen coords")
             return screen_x, screen_y
         
         panel_pos = dpg.get_item_pos(self.panel_id)
         panel_size = dpg.get_item_rect_size(self.panel_id)
         
         if panel_size[0] <= 0 or panel_size[1] <= 0:
-            print(f"COORD CONVERSION: Invalid panel size {panel_size}, returning screen coords")
             return screen_x, screen_y
         
         # Convert to normalized coordinates (0-1)
@@ -194,9 +180,6 @@ class BoundingBoxRenderer:
         # Convert to texture coordinates
         texture_x = rel_x * self.texture_width
         texture_y = rel_y * self.texture_height
-        
-        print(f"COORD CONVERSION: Panel-based - Panel pos: {panel_pos}, size: {panel_size}")
-        print(f"COORD CONVERSION: Relative: ({rel_x:.3f}, {rel_y:.3f}) -> Texture: ({texture_x:.1f}, {texture_y:.1f})")
         
         return texture_x, texture_y
     
@@ -231,9 +214,6 @@ class BoundingBoxRenderer:
         
         box = self.bounding_box
         
-        print(f"HIT TEST: Mouse at ({x:.1f}, {y:.1f}), Box: ({box.x:.1f}, {box.y:.1f}) {box.width:.1f}x{box.height:.1f}")
-        print(f"HIT TEST: Handle threshold: {self.handle_threshold}")
-        
         # Test handles in texture/image coordinate system directly
         handle_positions = {
             HandleType.TOP_LEFT: (box.x, box.y),
@@ -251,22 +231,13 @@ class BoundingBoxRenderer:
         
         for handle_type, (hx, hy) in handle_positions.items():
             # Use Euclidean distance for better circular hit detection
-            distance = ((x - hx) ** 2 + (y - hy) ** 2) ** 0.5
-            print(f"  {handle_type.value}: pos=({hx:.1f}, {hy:.1f}), distance={distance:.1f}")
-            
+            distance = ((x - hx) ** 2 + (y - hy) ** 2) ** 0.5            
             if distance <= self.handle_threshold:
                 if distance < closest_distance:
                     closest_distance = distance
                     closest_handle = handle_type
         
-        if closest_handle:
-            print(f"HIT TEST: Found handle {closest_handle.value} at distance {closest_distance:.1f}")
-        else:
-            print("HIT TEST: No handle hit")
-        
         return closest_handle
-    
-
     
     def _resize_box(self, handle: HandleType, current_x: float, current_y: float) -> None:
         """Resize the bounding box based on handle and current mouse position."""

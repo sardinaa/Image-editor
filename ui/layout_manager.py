@@ -1,10 +1,6 @@
-"""
-Layout management system for the main window.
-Separates layout logic from core window functionality.
-"""
 import dearpygui.dearpygui as dpg
-from typing import Dict, Tuple
-
+from typing import Dict
+from ui.tool_panel_modular import ModularToolPanel
 
 class LayoutManager:
     """Manages window layout and resizing logic."""
@@ -12,13 +8,14 @@ class LayoutManager:
     def __init__(self, main_window):
         self.main_window = main_window
         self.layout_config = {
-            'tool_panel_ratio': 0.25,  # 19% of width for tools (reduced to prevent horizontal scrolling)
+            'tool_panel_ratio': 0.25,
             'menu_bar_height': 30,
-            'status_bar_height': 35,   # Height for status bar
+            'status_bar_height': 35,
             'plot_margin': 5,
             'min_plot_size': 200,
-            'border_padding': 10  # Account for borders, spacing, and scrollbars
+            'border_padding': 10
         }
+        self.theme = ThemeManager()
     
     def get_layout_dimensions(self) -> Dict[str, int]:
         """Calculate layout dimensions based on viewport size."""
@@ -26,7 +23,6 @@ class LayoutManager:
             viewport_width = dpg.get_viewport_client_width()
             viewport_height = dpg.get_viewport_client_height()
         except (SystemError, RuntimeError):
-            # Viewport not created yet, use default dimensions
             viewport_width = 1400
             viewport_height = 900
         
@@ -62,6 +58,7 @@ class LayoutManager:
             no_resize=True, 
             no_collapse=True
         ):
+            self.theme.setup_default_themes()
             self._create_menu_bar()
             
             with dpg.group(horizontal=True):
@@ -101,6 +98,9 @@ class LayoutManager:
             with dpg.menu(label="Edit"):
                 dpg.add_menu_item(label="Reset All", callback=self.main_window._reset_all_processing)
                 dpg.add_menu_item(label="Clear Masks", callback=self.main_window._clear_all_masks)
+
+            #with dpg.menu(label="View"):
+                #dpg.add_checkbox(label="Dark Mode", tag= "dark_mode", default_value= True, callback=self.theme.apply_theme())
     
     def _create_central_panel(self, dims: Dict[str, int]):
         """Create the central image display panel."""
@@ -141,9 +141,6 @@ class LayoutManager:
             ):
                 dpg.add_plot_axis(dpg.mvXAxis, label="X", no_gridlines=True, tag=self.main_window.x_axis_tag)
                 dpg.add_plot_axis(dpg.mvYAxis, label="Y", no_gridlines=True, tag=self.main_window.y_axis_tag)
-                
-                # Add placeholder for image series
-                # Will be populated when image is loaded
     
     def _create_tool_panel(self, dims: Dict[str, int]):
         """Create the tool panel."""
@@ -153,10 +150,8 @@ class LayoutManager:
             height=dims['available_height'],
             border=True
         ):
-            print("🛠️  Creating tool panel...")
             
             # Create modular tool panel using service layer
-            from ui.tool_panel_modular import ModularToolPanel
             self.main_window.tool_panel = ModularToolPanel(
                 update_callback=self.main_window._on_parameter_change,
                 app_service=self.main_window.app_service,
@@ -175,15 +170,6 @@ class LayoutManager:
                 dpg.add_text("Image Editor Tools")
                 dpg.add_button(label="Load Image", callback=self.main_window._open_image)
                 dpg.add_button(label="Save Image", callback=self.main_window._save_image)
-                
-            print("✅ Tool panel created")
-    
-    def create_image_plot(self) -> Tuple[int, int]:
-        """Create the central image plot and return its dimensions. (Legacy method for compatibility)"""
-        # This method is now handled by _create_image_plot during layout setup
-        # Kept for backward compatibility if still called elsewhere
-        dims = self.get_layout_dimensions()
-        return dims['central_panel_width'] - 40, dims['available_height'] - 40
     
     def handle_resize(self):
         """Handle window resize events."""
@@ -222,28 +208,16 @@ class LayoutManager:
         
         # Update crop rotate UI
         if hasattr(self.main_window, 'crop_rotate_ui') and self.main_window.crop_rotate_ui:
-            # Update the crop UI's panel reference and recalculate axis limits
             self.main_window.crop_rotate_ui.panel_id = self.main_window.central_panel_tag
             if hasattr(self.main_window.crop_rotate_ui, 'update_axis_limits'):
-                self.main_window.crop_rotate_ui.update_axis_limits(force=True)  # Force resize update
+                self.main_window.crop_rotate_ui.update_axis_limits(force=True)
                 
-            # Force update the image display
             if hasattr(self.main_window.crop_rotate_ui, 'update_image'):
                 self.main_window.crop_rotate_ui.update_image(None, None, None)
         
         # Update main window axis limits using DisplayService
         if hasattr(self.main_window, '_update_axis_limits'):
             self.main_window._update_axis_limits(initial=True)
-    
-    def _reset_view(self):
-        """Reset the view to show the entire image."""
-        if hasattr(self.main_window, 'update_axis_limits'):
-            self.main_window.update_axis_limits(initial=True)
-    
-    def _fit_to_window(self):
-        """Fit the image to the current window size."""
-        self._reset_view()
-
 
 class ThemeManager:
     """Manages application themes and styling."""
@@ -280,14 +254,16 @@ class ThemeManager:
         self.themes["light"] = light_theme
         return light_theme
     
-    def apply_theme(self, theme_name: str):
+    def apply_theme(self, theme_name: str = None):
         """Apply a theme to the application."""
-        if theme_name in self.themes:
-            dpg.bind_theme(self.themes[theme_name])
-            self.current_theme = theme_name
+        dark_mode = dpg.get_value("dark_mode")
+        if dark_mode:
+            dpg.bind_theme(self.themes["dark"])
+        else:
+            dpg.bind_theme(self.themes["light"])
+        self.current_theme = theme_name
     
     def setup_default_themes(self):
         """Set up default themes."""
         self.create_dark_theme()
         self.create_light_theme()
-        self.apply_theme("dark")

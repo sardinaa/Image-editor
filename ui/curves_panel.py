@@ -50,7 +50,6 @@ class CurvesPanel:
         try:
             # Get the viewport dimensions
             viewport_width = dpg.get_viewport_client_width()
-            viewport_height = dpg.get_viewport_client_height()
             
             # Calculate available width for the tool panel (25% of viewport)
             tool_panel_width = int(viewport_width * 0.25)
@@ -79,14 +78,6 @@ class CurvesPanel:
         """Show the curves editor directly in the tool panel"""
         self.create_panel()
     
-    def hide(self):
-        """Hide functionality is no longer needed as the panel is always visible"""
-        pass
-    
-    def on_window_close(self):
-        """No longer needed as the panel is always visible"""
-        pass
-    
     def create_panel(self):
         """Create the curves editor panel directly in the parent"""
         # Calculate the optimal plot size for current window dimensions
@@ -108,7 +99,7 @@ class CurvesPanel:
             
             # Add the plot for curves - square aspect ratio (1:1) that resizes
             with dpg.plot(tag=self.plot_tag, height=self.plot_size, width=self.plot_size,
-                         callback=self.on_plot_callback) as plot:
+                         callback=self.on_plot_callback):
                 
                 # Add plot axes with unique tags
                 dpg.add_plot_axis(dpg.mvXAxis, label="Input", tag=self.x_axis_tag)
@@ -213,6 +204,9 @@ class CurvesPanel:
             if channel_key == "rgb":
                 # If RGB (all channels), use R for display
                 channel_key = "r"
+
+            if channel_key not in self.curves:
+                self.curves[channel_key] = [(0, 0), (128, 128), (255, 255)]
             
             # If there are fewer than 2 points, reset to default
             if len(self.curves[channel_key]) < 2:
@@ -299,7 +293,7 @@ class CurvesPanel:
             
             # Add a larger highlight for selected point if any
             if self.selected_point is not None:
-                idx, channels = self.selected_point
+                idx, _ = self.selected_point
                 # Use the channel we're currently displaying for the selected point
                 if 0 <= idx < len(self.curves[channel_key]):
                     selected_x, selected_y = self.curves[channel_key][idx]
@@ -353,90 +347,8 @@ class CurvesPanel:
         # Notify of changes to update the image
         self.callback(sender, app_data, user_data)
     
-    def on_simple_click(self, sender, app_data):
-        """Simple click handler that checks if over plot"""
-        
-        if not self.is_mouse_over_plot():
-            return
-        
-        # Get plot coordinates
-        x, y = self.get_mouse_plot_coordinates()
-        
-        # Clamp values
-        x = max(0, min(255, x))
-        y = max(0, min(255, y))
-        
-        # Get the current channel key
-        channel_key = self.current_channel.lower()
-        check_key = "r" if channel_key == "rgb" else channel_key
-        channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
-        
-        # Check if we're clicking near an existing point
-        hit_radius = 40
-        for idx, point in enumerate(self.curves[check_key]):
-            distance = abs(point[0] - x) + abs(point[1] - y)
-            if distance < hit_radius:
-                # Start dragging this point
-                self.dragging_point = (idx, channels_to_modify)
-                return
-        
-        # If no point found, add a new one
-        for ch in channels_to_modify:
-            self.curves[ch].append((x, y))
-        
-        # Update the plot
-        self.update_plot()
-        
-        # Notify of changes
-        self.callback(sender, app_data, None)
-    
-    def on_simple_drag(self, sender, app_data):
-        """Simple drag handler"""
-        if self.dragging_point is None:
-            return
-            
-        if not self.is_mouse_over_plot():
-            return
-            
-        # Get mouse position in plot coordinates
-        x, y = self.get_mouse_plot_coordinates()
-        
-        # Clamp values
-        x = max(0, min(255, x))
-        y = max(0, min(255, y))
-        
-        # Update point in all affected channels
-        idx, channels = self.dragging_point
-        for ch in channels:
-            if 0 <= idx < len(self.curves[ch]):
-                # Special cases for endpoints
-                if idx == 0:  # First point
-                    x = 0  # Keep at 0
-                elif idx == len(self.curves[ch]) - 1:  # Last point
-                    x = 255  # Keep at 255
-                old_point = self.curves[ch][idx]
-                self.curves[ch][idx] = (x, y)
-        
-        # Update the plot
-        self.update_plot()
-        
-        # For real-time histogram updates during drag, call the histogram callback if available
-        if hasattr(self, 'realtime_histogram_callback') and self.realtime_histogram_callback:
-            self.realtime_histogram_callback()
-        
-        # Notify of changes
-        self.callback(sender, app_data, None)
-    
-    def on_simple_release(self, sender, app_data):
-        """Simple release handler"""
-        if self.dragging_point is not None:
-            self.dragging_point = None
-    
     def on_plot_clicked(self, sender, app_data):
         """Handle clicks specifically on the plot area"""
-        
-        # Get mouse position relative to the plot
-        mouse_pos = dpg.get_mouse_pos()
         
         # Check if we're actually over the plot
         if not self.is_mouse_over_plot():
@@ -538,164 +450,6 @@ class CurvesPanel:
         # Notify of changes
         self.callback(None, None, None)
     
-    def on_plot_hover(self, sender, app_data):
-        """Handle hover over the plot"""
-        # Could implement hover effects here if needed
-        pass
-    
-    def on_plot_click(self, sender, app_data):
-        """Handle plot clicks - this gets called when the plot is clicked"""
-        
-        # Use the app_data which should contain plot coordinates
-        if app_data and len(app_data) >= 2:
-            # app_data should contain [x, y] coordinates in plot space
-            x, y = app_data[0], app_data[1]
-            
-            # Convert to integer curve coordinates [0,255]
-            x = max(0, min(255, int(x)))
-            y = max(0, min(255, int(y)))
-            
-            
-            # Get the current channel key
-            channel_key = self.current_channel.lower()
-            
-            # Fix: Use "r" for point checking when "rgb" is selected
-            check_key = "r" if channel_key == "rgb" else channel_key
-            
-            # If RGB selected, modify all channels
-            channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
-            
-            # Increase hit-test radius - make it easier to select points
-            hit_radius = 40
-            
-            # Check if clicked near an existing point
-            for idx, point in enumerate(self.curves[check_key]):
-                distance = abs(point[0] - x) + abs(point[1] - y)  # Manhattan distance
-                if distance < hit_radius:
-                    # Found a point near click - start dragging
-                    self.dragging_point = (idx, channels_to_modify)
-                    return
-            
-            # If no point found, add a new one to each affected channel
-            for ch in channels_to_modify:
-                self.curves[ch].append((x, y))
-            
-            # Update the plot
-            self.update_plot()
-            
-            # Notify of changes
-            self.callback(sender, app_data, None)
-    
-    def on_click(self, sender, app_data):
-        """Handle mouse click to add or select a point"""
-        if not self.is_mouse_over_plot():
-            return
-        
-        # Get mouse position in plot coordinates
-        x, y = self.get_mouse_plot_coordinates()
-        
-        # Clamp values
-        x = max(0, min(255, x))
-        y = max(0, min(255, y))
-        
-        # Get the current channel key
-        channel_key = self.current_channel.lower()
-        
-        # Fix: Use "r" for point checking when "rgb" is selected
-        check_key = "r" if channel_key == "rgb" else channel_key
-        
-        # If RGB selected, modify all channels
-        channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
-        
-        # Increase hit-test radius - make it easier to select points
-        hit_radius = 40  # Increased from 25, then from 30
-        
-        # Check if clicked near an existing point - use check_key instead of channel_key
-        for idx, point in enumerate(self.curves[check_key]):
-            distance = abs(point[0] - x) + abs(point[1] - y)  # Manhattan distance
-            if distance < hit_radius:
-                # Found a point near click
-                self.dragging_point = (idx, channels_to_modify)
-                return
-        
-        # If no point found, add a new one to each affected channel
-        for ch in channels_to_modify:
-            self.curves[ch].append((x, y))
-        
-        # Update the plot
-        self.update_plot()
-        
-        # Notify of changes - Fix: Pass all required parameters to callback
-        self.callback(sender, app_data, None)
-    
-    def on_drag(self, sender, app_data):
-        """Handle dragging a point"""
-        if self.dragging_point is None:
-            return
-        
-        # Get mouse position in plot coordinates using the helper method
-        x, y = self.get_mouse_plot_coordinates()
-        
-        # Clamp values
-        x = max(0, min(255, x))
-        y = max(0, min(255, y))
-        
-        # Update point in all affected channels
-        idx, channels = self.dragging_point
-        for ch in channels:
-            if 0 <= idx < len(self.curves[ch]):
-                # Special cases for endpoints
-                if idx == 0:  # First point
-                    x = 0  # Keep at 0
-                elif idx == len(self.curves[ch]) - 1:  # Last point
-                    x = 255  # Keep at 255
-                old_point = self.curves[ch][idx]
-                self.curves[ch][idx] = (x, y)
-        
-        # Update the plot
-        self.update_plot()
-        
-        # For real-time histogram updates during drag, call the histogram callback if available
-        if hasattr(self, 'realtime_histogram_callback') and self.realtime_histogram_callback:
-            self.realtime_histogram_callback()
-        
-        # Notify of changes - Fix: Pass all required parameters to callback
-        self.callback(sender, app_data, None)
-    
-    def on_release(self, sender, app_data):
-        """Handle mouse release"""
-        was_dragging = self.dragging_point is not None
-        self.dragging_point = None
-        
-        # Update histogram when user finishes adjusting curves
-        if was_dragging and hasattr(self, '_histogram_update_callback'):
-            self._histogram_update_callback()
-    
-    def on_mouse_move(self, sender, app_data):
-        """Handle mouse movement for hover effects"""
-        if not self.is_mouse_over_plot():
-            return
-            
-        # Could implement hover highlighting here
-        # For performance reasons, we'll just update the cursor
-        x, y = self.get_mouse_plot_coordinates()
-        
-        # Get the current channel key
-        channel_key = self.current_channel.lower()
-        check_key = "r" if channel_key == "rgb" else channel_key
-        
-        # Check if mouse is near any point
-        hover_radius = 15
-        is_near_point = False
-        
-        for point in self.curves[check_key]:
-            if abs(point[0] - x) < hover_radius and abs(point[1] - y) < hover_radius:
-                is_near_point = True
-                break
-                
-        # Could change cursor here if over a point
-        # But that's outside the scope of this fix
-    
     def get_mouse_plot_coordinates(self):
         """Convert screen coordinates to plot coordinates"""
         try:
@@ -707,7 +461,6 @@ class CurvesPanel:
                 return 0, 0
                 
             plot_rect_min = dpg.get_item_rect_min(self.plot_tag)
-            plot_rect_max = dpg.get_item_rect_max(self.plot_tag)
             plot_rect_size = dpg.get_item_rect_size(self.plot_tag)
             
             # Calculate relative position within the entire plot area
@@ -796,57 +549,6 @@ class CurvesPanel:
         except Exception as e:
             return False
     
-    def test_click_simulation(self, sender=None, app_data=None, user_data=None):
-        """Test clicking functionality by simulating a click at specific coordinates"""
-        
-        # Simulate a click at plot coordinates (100, 150)
-        x, y = 100, 150
-        
-        # Get the current channel key
-        channel_key = self.current_channel.lower()
-        check_key = "r" if channel_key == "rgb" else channel_key
-        channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
-        
-        # Check if we're clicking near an existing point
-        hit_radius = 40
-        point_found = False
-        
-        for idx, point in enumerate(self.curves[check_key]):
-            distance = abs(point[0] - x) + abs(point[1] - y)
-            if distance < hit_radius:
-                point_found = True
-                break
-        
-        if not point_found:
-            # Add a new point
-            for ch in channels_to_modify:
-                self.curves[ch].append((x, y))
-            
-            # Update the plot
-            self.update_plot()
-            
-            # Notify of changes
-            self.callback(sender, app_data, user_data)
-    
-    def test_add_point(self, sender=None, app_data=None, user_data=None):
-        """Test method to add a point and verify curve functionality"""
-        
-        # Get current channel
-        channel_key = self.current_channel.lower()
-        channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
-        
-        # Add a test point at (64, 192) to create a curve
-        for ch in channels_to_modify:
-            # Insert the point and sort
-            self.curves[ch].append((64, 192))
-            self.curves[ch] = sorted(self.curves[ch], key=lambda p: p[0])
-        
-        # Update the plot
-        self.update_plot()
-        
-        # Notify of changes
-        self.callback(sender, app_data, user_data)
-    
     def reset_curve(self, sender=None, app_data=None, user_data=None):
         """Reset the curve to default (linear)"""
         channel_key = self.current_channel.lower()
@@ -862,12 +564,6 @@ class CurvesPanel:
         self.update_plot()
         # Fix: Pass all required parameters to callback
         self.callback(sender, app_data, user_data)
-    
-    def apply_curve(self, sender=None, app_data=None, user_data=None):
-        """Apply the curve to the image and close the window"""
-        # Fix: Pass all required parameters to callback
-        self.callback(sender, app_data, user_data)
-        self.hide()
     
     def get_curves(self):
         """Return the curves data for image processing"""
@@ -890,7 +586,7 @@ class CurvesPanel:
         # Set curves data if provided
         if 'curves' in curves_data and isinstance(curves_data['curves'], dict):
             # Validate and set each channel
-            for channel in ['r', 'g', 'b']:
+            for channel in ['r', 'g', 'b', 'l']:
                 if channel in curves_data['curves']:
                     channel_curves = curves_data['curves'][channel]
                     if isinstance(channel_curves, list):
@@ -975,14 +671,20 @@ class CurvesPanel:
         channel_key = self.current_channel.lower()
         check_key = "r" if channel_key == "rgb" else channel_key
         
+        # Ensure the check_key exists
+        if check_key not in self.curves:
+            self.curves[check_key] = [(0, 0), (128, 128), (255, 255)]
+            self.selected_point = None
+            return
+        
         # Don't allow deletion of first and last points (endpoints)
-        if idx == 0 or idx == len(self.curves[check_key]) - 1:
+        if idx in (0, len(self.curves[check_key]) - 1):
             self.selected_point = None
             return
         
         # Delete the point from all affected channels
         for ch in channels:
-            if 0 <= idx < len(self.curves[ch]):
+            if ch in self.curves and 0 <= idx < len(self.curves[ch]):
                 del self.curves[ch][idx]
         
         # Clear selection
@@ -1001,6 +703,15 @@ class CurvesPanel:
         channel_key = self.current_channel.lower()
         check_key = "r" if channel_key == "rgb" else channel_key
         channels_to_modify = ["r", "g", "b"] if channel_key == "rgb" else [channel_key]
+        
+        # Ensure the check_key exists in curves dictionary
+        if check_key not in self.curves:
+            self.curves[check_key] = [(0, 0), (128, 128), (255, 255)]
+        
+        # Ensure all channels to modify exist
+        for ch in channels_to_modify:
+            if ch not in self.curves:
+                self.curves[ch] = [(0, 0), (128, 128), (255, 255)]
         
         # Check if clicking near an existing point - increased hit radius for easier selection
         hit_radius = 40  # Increased from 30 for better user experience

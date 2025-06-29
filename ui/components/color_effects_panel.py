@@ -1,8 +1,3 @@
-"""
-Color and effects control panel.
-Handles saturation, texture, grain, and temperature adjustments.
-"""
-import dearpygui.dearpygui as dpg
 from typing import Dict, Any
 from ui.components.base_panel import BasePanel
 

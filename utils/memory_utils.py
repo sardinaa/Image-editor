@@ -4,7 +4,7 @@ Centralizes memory cleanup and error handling patterns.
 """
 import gc
 import torch
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 from contextlib import contextmanager
 
 
@@ -52,7 +52,6 @@ class MemoryManager:
     def cleanup_gpu_memory():
         """Legacy cleanup method for GPU memory - redirects to clear_cuda_cache."""
         MemoryManager.clear_cuda_cache()
-        print("GPU memory cleanup completed")
     
     @staticmethod
     def is_memory_sufficient(required_mb: float = 1000.0) -> bool:
@@ -69,7 +68,6 @@ class MemoryManager:
         try:
             info = MemoryManager.get_device_info()
             if info['total_gb'] < min_gpu_memory_gb:
-                print(f"GPU memory ({info['total_gb']:.2f}GB) below threshold ({min_gpu_memory_gb}GB), using CPU")
                 return "cpu"
             return "cuda"
         except Exception as e:
@@ -185,10 +183,7 @@ class ResourceManager:
             return False
         
         memory_info = MemoryManager.get_device_info()
-        if memory_info['free_mb'] < self.memory_threshold:
-            print(f"Critical memory situation: {memory_info['free_mb']:.1f}MB free")
-            print(f"Moving {model_name} to CPU to free GPU memory...")
-            
+        if memory_info['free_mb'] < self.memory_threshold:            
             model_info['model'].to('cpu')
             model_info['temp_cpu_mode'] = True
             MemoryManager.clear_cuda_cache()
@@ -207,7 +202,6 @@ class ResourceManager:
         
         memory_info = MemoryManager.get_device_info()
         if memory_info['free_mb'] > 1000:  # At least 1GB free
-            print(f"Moving {model_name} back to CUDA...")
             model_info['model'].to('cuda')
             model_info['temp_cpu_mode'] = False
             return True
@@ -220,7 +214,6 @@ class ResourceManager:
             try:
                 if hasattr(model_info['model'], 'cleanup'):
                     model_info['model'].cleanup()
-                print(f"Cleaned up model: {name}")
             except Exception as e:
                 print(f"Error cleaning up model {name}: {e}")
         

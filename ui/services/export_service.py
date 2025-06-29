@@ -1,14 +1,8 @@
-"""
-ExportService - Centralized Export Functionality Service
-Extracts export dialog and file handling logic from ProductionMainWindow to complete service-oriented architecture.
-"""
-
 import dearpygui.dearpygui as dpg
 import cv2
-import numpy as np
 import os
 import threading
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 from utils.ui_helpers import safe_item_check
 
@@ -177,26 +171,17 @@ class ExportService:
     
     def _browse_export_path(self):
         """Open path browser for export location."""
-        print("📂 Browse export path clicked")
         
         # Temporarily hide the export modal to avoid layering issues
         if dpg.does_item_exist("export_modal"):
             dpg.hide_item("export_modal")
-            print("🔄 Hid export modal")
         
         # Show the path dialog
         if dpg.does_item_exist("export_path_dialog"):
             dpg.show_item("export_path_dialog")
-            print("🔄 Showed path dialog")
-        else:
-            print("❌ Export path dialog does not exist")
     
     def _export_path_callback(self, sender, app_data, user_data):
         """Handle export path selection."""
-        print(f"📁 Export path callback triggered")
-        print(f"   Sender: {sender}")
-        print(f"   App data: {app_data}")
-        print(f"   User data: {user_data}")
         
         # Hide the path dialog first
         if dpg.does_item_exist("export_path_dialog"):
@@ -216,29 +201,22 @@ class ExportService:
             selected_path = app_data
         
         if selected_path:
-            print(f"✅ Selected path: {selected_path}")
             if dpg.does_item_exist("export_path"):
                 dpg.set_value("export_path", selected_path)
             self._export_settings['path'] = selected_path
             self._update_export_preview()
-        else:
-            print("❌ No path selected or path extraction failed")
         
         # Use a small delay to ensure proper order of operations
         def show_modal_after_delay():
             if dpg.does_item_exist("export_modal"):
                 dpg.show_item("export_modal")
-                print("🔄 Showed export modal again (delayed)")
-            else:
-                print("❌ Export modal does not exist (delayed check)")
-        
+
         # Schedule the modal to show after a small delay
         timer = threading.Timer(0.1, show_modal_after_delay)
         timer.start()
     
     def _export_path_cancel_callback(self, sender, app_data, user_data):
         """Handle export path dialog cancellation."""
-        print("🚫 Export path dialog cancelled")
         
         # Hide the path dialog
         if dpg.does_item_exist("export_path_dialog"):
@@ -248,10 +226,7 @@ class ExportService:
         def show_modal_after_delay():
             if dpg.does_item_exist("export_modal"):
                 dpg.show_item("export_modal")
-                print("🔄 Showed export modal again after cancel (delayed)")
-            else:
-                print("❌ Export modal does not exist (delayed check)")
-        
+
         # Schedule the modal to show after a small delay
         timer = threading.Timer(0.1, show_modal_after_delay)
         timer.start()
@@ -349,15 +324,15 @@ class ExportService:
             success = cv2.imwrite(full_path, save_image, save_params)
             
             if success:
-                print(f"✓ Image exported successfully to: {full_path}")
                 dpg.set_value("export_preview", f"✓ Successfully exported to:\n{full_path}")
+                self.app_service.main_window._update_status(f"Image exported successfully to: {full_path}")
                 
                 # Close modal after successful export
                 self._close_export_modal()
                 
             else:
                 dpg.set_value("export_preview", f"✗ Failed to export image to:\n{full_path}")
-                print(f"✗ Failed to export image to: {full_path}")
+                self.app_service.main_window._update_status(f"Failed to export image to: {full_path}")
                 
         except Exception as e:
             error_msg = f"Export error: {str(e)}"
@@ -407,7 +382,6 @@ class ExportService:
             # Get current processed image
             current_image = self.app_service.image_service.get_processed_image()
             if current_image is None:
-                print("Error: No image to export")
                 return False
             
             # Use provided values or defaults
@@ -429,7 +403,7 @@ class ExportService:
             
             # Check if directory exists
             if not os.path.exists(path):
-                print(f"Error: Directory does not exist: {path}")
+                self.app_service.main_window._update_status(f"Error: Directory does not exist: {path}")
                 return False
             
             # Prepare image for saving
@@ -453,10 +427,10 @@ class ExportService:
             success = cv2.imwrite(full_path, save_image, save_params)
             
             if success:
-                print(f"✓ Image exported successfully to: {full_path}")
+                self.app_service.main_window._update_status(f"✓ Image exported successfully to: {full_path}")
                 return True
             else:
-                print(f"✗ Failed to export image to: {full_path}")
+                self.app_service.main_window._update_status(f"✗ Failed to export image to: {full_path}")
                 return False
                 
         except Exception as e:

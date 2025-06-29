@@ -16,12 +16,9 @@ class BasePanel:
         self.panel_tag = None
         self.is_visible = True
         self.parameters = {}
+        self._slider_defaults = {}
         self._deferred_callbacks = []  # Store slider tags for deferred callback registration
         self._callbacks_enabled = True  # Track whether callbacks are enabled
-    
-    def setup(self) -> None:
-        """Setup the panel. Override in subclasses."""
-        pass
     
     def draw(self) -> None:
         """Draw the panel UI. Override in subclasses."""

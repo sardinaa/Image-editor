@@ -1,9 +1,5 @@
-"""
-Crop and rotate control panel.
-Handles crop mode toggle, rotation slider, and crop operations.
-"""
 import dearpygui.dearpygui as dpg
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from ui.components.base_panel import BasePanel
 from utils.ui_helpers import UIStateManager
 
@@ -41,7 +37,7 @@ class CropPanel(BasePanel):
         # Crop controls panel (initially hidden)
         with dpg.child_window(
             tag="crop_panel",
-            height=65,  # Increased height to accommodate flip buttons
+            height=65,
             autosize_x=True,
             show=False,
             border=False
@@ -87,10 +83,8 @@ class CropPanel(BasePanel):
         
         # If crop mode is being enabled, disable masks
         if current:
-            # Check if masks are currently enabled
             if (UIStateManager.safe_item_exists("mask_section_toggle") and 
                 UIStateManager.safe_get_value("mask_section_toggle", False)):
-                print("Disabling masks to enable crop & rotate")
                 UIStateManager.safe_set_value("mask_section_toggle", False)
                 # Trigger the mask section toggle to handle all the mask disabling logic
                 if self.main_window and hasattr(self.main_window, 'tool_panel'):
@@ -105,15 +99,10 @@ class CropPanel(BasePanel):
         if self.main_window and hasattr(self.main_window, 'layer_masks') and self.main_window.layer_masks:
             try:
                 if current:
-                    # Crop mode enabled - hide all mask overlays
                     from utils.ui_helpers import MaskOverlayManager
                     MaskOverlayManager.hide_all_overlays(len(self.main_window.layer_masks))
-                    print("Hidden all mask overlays (crop mode enabled)")
                 else:
-                    # Crop mode disabled - update overlays to apply rotation
-                    # The masks panel will control visibility based on mask state
                     self.main_window.update_mask_overlays(self.main_window.layer_masks)
-                    print("Updated mask overlays (crop mode disabled, rotation applied)")
             except Exception as e:
                 print(f"Error handling mask overlays during crop mode toggle: {e}")
         
@@ -126,7 +115,6 @@ class CropPanel(BasePanel):
     
     def _update_crop_rotate(self, sender, app_data, user_data):
         """Update crop/rotate visualization."""
-        # Get CropRotateUI from main window if crop_and_rotate_ref is None
         crop_rotate_ui = None
         if self.crop_and_rotate_ref:
             crop_rotate_ui = self.crop_and_rotate_ref()
@@ -161,7 +149,6 @@ class CropPanel(BasePanel):
     
     def _set_max_rect(self, sender, app_data, user_data):
         """Set crop rectangle to maximum area."""
-        # Get CropRotateUI from main window if crop_and_rotate_ref is None
         crop_rotate_ui = None
         if self.crop_and_rotate_ref:
             crop_rotate_ui = self.crop_and_rotate_ref()
@@ -173,7 +160,6 @@ class CropPanel(BasePanel):
     
     def _crop_image(self, sender, app_data, user_data):
         """Apply crop to the image."""
-        # Get CropRotateUI from main window if crop_and_rotate_ref is None
         crop_rotate_ui = None
         if self.crop_and_rotate_ref:
             crop_rotate_ui = self.crop_and_rotate_ref()
@@ -188,7 +174,6 @@ class CropPanel(BasePanel):
         current = self.parameters.get('flip_horizontal', False)
         self.parameters['flip_horizontal'] = not current
         
-        # Get CropRotateUI and apply flip
         crop_rotate_ui = None
         if self.crop_and_rotate_ref:
             crop_rotate_ui = self.crop_and_rotate_ref()
@@ -204,8 +189,7 @@ class CropPanel(BasePanel):
         """Toggle vertical flip."""
         current = self.parameters.get('flip_vertical', False)
         self.parameters['flip_vertical'] = not current
-        
-        # Get CropRotateUI and apply flip
+
         crop_rotate_ui = None
         if self.crop_and_rotate_ref:
             crop_rotate_ui = self.crop_and_rotate_ref()
@@ -219,7 +203,6 @@ class CropPanel(BasePanel):
     
     def _update_flip_display(self):
         """Update the crop/rotate display to show flips."""
-        # Get CropRotateUI from main window if crop_and_rotate_ref is None
         crop_rotate_ui = None
         if self.crop_and_rotate_ref:
             crop_rotate_ui = self.crop_and_rotate_ref()
@@ -235,8 +218,7 @@ class CropPanel(BasePanel):
             'crop_mode': UIStateManager.safe_get_value("crop_mode", False),
             'rotate_angle': UIStateManager.safe_get_value("rotation_slider", 0)
         }
-        
-        # Get flip states from CropRotateUI if available
+
         crop_rotate_ui = None
         if self.crop_and_rotate_ref:
             crop_rotate_ui = self.crop_and_rotate_ref()
@@ -247,7 +229,6 @@ class CropPanel(BasePanel):
             flip_states = crop_rotate_ui.get_flip_states()
             params.update(flip_states)
         else:
-            # Fallback to local parameters
             params.update({
                 'flip_horizontal': self.parameters.get('flip_horizontal', False),
                 'flip_vertical': self.parameters.get('flip_vertical', False)

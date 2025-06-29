@@ -1,12 +1,4 @@
-"""
-EventHandlers - Low-Level Input Event Handling System
-Handles direct DearPyGUI input events (mouse, keyboard) and UI interactions.
-This system focuses on input processing, coordinate transformations, and UI element manipulation.
-Note: Business logic coordination is handled by ui/services/event_coordinator.py
-"""
 import dearpygui.dearpygui as dpg
-from typing import Tuple, Optional, Callable
-
 
 class EventHandlers:
     """
@@ -195,7 +187,6 @@ class EventHandlers:
                 if box_width > 10 and box_height > 10:  # Minimum box size
                     # Convert to standard box format [x1, y1, x2, y2]
                     box = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
-                    print(f"Box selection completed: {box}")
                     
                     # Trigger segmentation through app service
                     if self.app_service and hasattr(self.app_service, 'perform_box_segmentation'):
@@ -335,7 +326,7 @@ class EventHandlers:
             bbox_renderer.drag_start_box = bbox_renderer.bounding_box.copy()
             
             if bbox_renderer.on_start_drag_callback:
-                bbox_renderer.on_start_drag_callback(bbox_renderer.bounding_box.copy())
+                bbox_renderer.on_start_drag_callback()
             return True
         
         # Check for handle hits first (resize mode with direct left-click)
@@ -350,7 +341,7 @@ class EventHandlers:
             bbox_renderer.drag_start_box = bbox_renderer.bounding_box.copy()
             
             if bbox_renderer.on_start_drag_callback:
-                bbox_renderer.on_start_drag_callback(bbox_renderer.bounding_box.copy())
+                bbox_renderer.on_start_drag_callback()
             return True
         
         # Check if clicking inside the box (move mode with direct left-click)
@@ -363,7 +354,7 @@ class EventHandlers:
             bbox_renderer.drag_start_box = bbox_renderer.bounding_box.copy()
             
             if bbox_renderer.on_start_drag_callback:
-                bbox_renderer.on_start_drag_callback(bbox_renderer.bounding_box.copy())
+                bbox_renderer.on_start_drag_callback()
             return True
         
         return False

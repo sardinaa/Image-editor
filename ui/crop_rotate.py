@@ -16,6 +16,8 @@ class CropRotateUI:
         self.rotated_image = None
         self.offset_x = 0
         self.offset_y = 0
+        self.rot_h = 0
+        self.rot_w = 0
 
         # Flip states
         self.flip_horizontal = False
@@ -28,6 +30,7 @@ class CropRotateUI:
         self.y_axis_tag = "y_axis"
         self.panel_id = "central_panel"  # Use production version's panel tag
         self.rotation_slider = "rotation_slider"
+        self._axis_limits_initialized = False
 
         # Initialize the slider if it doesn't exist
         if not dpg.does_item_exist(self.rotation_slider):
@@ -70,7 +73,7 @@ class CropRotateUI:
         self.user_rect = bbox.to_dict()
         self.update_rectangle_overlay()
     
-    def _on_bbox_start_drag(self, bbox: BoundingBox) -> None:
+    def _on_bbox_start_drag(self) -> None:
         """Called when bounding box drag starts."""
         self.drag_active = True
     
@@ -239,7 +242,6 @@ class CropRotateUI:
                                     parent=self.y_axis_tag,
                                     tag="main_image_series"
                                 )
-                                print("✓ Created image series for crop mode")
             else:
                 # Just display the original image with processing parameters but no crop
                 display_image = self.original_image.copy()  # self.original_image already has all processing applied
@@ -339,26 +341,11 @@ class CropRotateUI:
             display_width = orig_w * padding_factor
             display_height = display_width / plot_aspect
             
-            # Center view on the actual image
-            x_center = image_offset_x + orig_w / 2
-            y_center = image_offset_y + orig_h / 2
-            x_min = x_center - display_width / 2
-            x_max = x_center + display_width / 2
-            y_min = y_center - display_height / 2
-            y_max = y_center + display_height / 2
         else:
             # Image is taller - fit to plot height, scale width
             display_height = orig_h * padding_factor
             display_width = display_height * plot_aspect
             
-            # Center view on the actual image
-            x_center = image_offset_x + orig_w / 2
-            y_center = image_offset_y + orig_h / 2
-            x_min = x_center - display_width / 2
-            x_max = x_center + display_width / 2
-            y_min = y_center - display_height / 2
-            y_max = y_center + display_height / 2
-        
         # Don't modify the image series bounds - keep them as the full texture
         # Use auto-fitting instead of locked limits to allow free panning
         dpg.set_axis_limits_auto(self.x_axis_tag)
@@ -454,8 +441,6 @@ class CropRotateUI:
             
             if dpg.does_item_exist("cropped_texture"):
                 dpg.delete_item("cropped_texture")
-            
-            print("✓ CropRotateUI cleanup completed")
             
         except Exception as e:
             print(f"Error during CropRotateUI cleanup: {e}")

@@ -4,14 +4,11 @@ Centralizes business logic and coordinates between different subsystems.
 """
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
-from pathlib import Path
-import dearpygui.dearpygui as dpg
-import cv2
+import traceback
 
-# Import utilities
 from utils.memory_utils import MemoryManager, ErrorHandler, ResourceManager
-from utils.ui_helpers import UIStateManager, safe_item_check
-
+from ui.segmentation import ImageSegmenter
+from processing.file_manager import load_image
 
 class ImageService:
     """Service for managing image operations and state."""
@@ -25,9 +22,6 @@ class ImageService:
     def load_image(self, file_path: str) -> Optional[np.ndarray]:
         """Load an image from file."""
         try:
-            # Import here to avoid circular dependencies
-            from processing.file_manager import load_image
-            
             image = load_image(file_path)
             self.current_image = image
             self.current_image_path = file_path
@@ -40,23 +34,6 @@ class ImageService:
             error_msg = ErrorHandler.handle_memory_error(e, "image loading")
             print(error_msg)
             return None
-    
-    def save_image(self, file_path: str, image: Optional[np.ndarray] = None) -> bool:
-        """Save an image to file."""
-        try:
-            # Import here to avoid circular dependencies
-            from processing.file_manager import save_image
-            
-            image_to_save = image if image is not None else self.current_image
-            if image_to_save is None:
-                print("No image to save")
-                return False
-            
-            save_image(file_path, image_to_save)
-            return True
-        except Exception as e:
-            print(f"Error saving image: {e}")
-            return False
     
     def create_image_processor(self, image: np.ndarray):
         """Create an image processor for the given image."""
@@ -92,7 +69,6 @@ class ImageService:
             # Return the current image if no processor is available
             return self.current_image
         return None
-
 
 class MaskService:
     """Service for managing mask operations and state."""
@@ -224,35 +200,26 @@ class MaskService:
 class SegmentationService:
     """Service for managing segmentation operations."""
     
-    def __init__(self):
+    def __init__(self, main_window=None):
         self.segmenter = None
         self.resource_manager = ResourceManager()
         self.segmentation_mode = False
         self.pending_selection = None
+        self.main_window = main_window
     
     def get_segmenter(self):
         """Get or create segmenter instance with memory-efficient approach."""
         if self.segmenter is None:
-            try:
-                # Import here to avoid circular dependencies
-                from ui.segmentation import ImageSegmenter
-                
-                print("Creating ImageSegmenter instance...")
-                
+            try:  
                 # Check available memory first
                 memory_info = MemoryManager.get_device_info()
-                print(f"Available memory: {memory_info}")
-                
-                # Select device based on memory requirements
-                # SAM model requires about 4GB of GPU memory
                 device = MemoryManager.select_optimal_device(min_gpu_memory_gb=4.0)
                 
                 # If GPU doesn't have enough memory, force CPU mode
                 if device == "cuda" and memory_info['free_mb'] < 3000:  # 3GB threshold
-                    print(f"GPU has only {memory_info['free_mb']:.1f}MB free, forcing CPU mode")
                     device = "cpu"
                 
-                print(f"Selected device: {device}")
+                self.main_window._update_status(f"Selected device to apply segmentation: {device}")
                 
                 # Clear memory before creating segmenter
                 MemoryManager.clear_cuda_cache()
@@ -266,18 +233,15 @@ class SegmentationService:
                     device
                 )
                 
-                print(f"ImageSegmenter instance created successfully on {device}")
-                
             except Exception as e:
                 error_msg = ErrorHandler.handle_memory_error(e, "segmenter creation")
                 print(error_msg)
                 
                 # Try fallback to CPU if GPU failed
                 try:
-                    print("Attempting CPU fallback for segmenter...")
                     MemoryManager.clear_cuda_cache()
                     self.segmenter = ImageSegmenter(device="cpu")
-                    print("ImageSegmenter created successfully on CPU as fallback")
+                    self.main_window._update_status("ImageSegmenter created successfully on CPU as fallback")
                 except Exception as cpu_e:
                     print(f"CPU fallback also failed: {cpu_e}")
                     return None
@@ -349,7 +313,6 @@ class SegmentationService:
         if self.segmenter:
             self.cleanup_memory()
             self.segmenter = None
-            print("Segmenter instance reset")
     
     def enable_segmentation_mode(self) -> bool:
         """Enable segmentation mode."""
@@ -373,7 +336,6 @@ class SegmentationService:
     def validate_segmentation_requirements(self, crop_rotate_ui=None) -> bool:
         """Validate that segmentation requirements are met."""
         if not crop_rotate_ui or not hasattr(crop_rotate_ui, "original_image"):
-            print("No image available for segmentation.")
             return False
             
         return True
@@ -382,7 +344,6 @@ class SegmentationService:
         """Transform texture coordinates to image coordinates, accounting for flips."""
         try:
             if not crop_rotate_ui or crop_rotate_ui.original_image is None:
-                print("DEBUG: transform_texture_coordinates_to_image - No crop_rotate_ui or original_image")
                 return None
                 
             image = crop_rotate_ui.original_image
@@ -402,10 +363,6 @@ class SegmentationService:
                 flip_horizontal = flip_states.get('flip_horizontal', False)
                 flip_vertical = flip_states.get('flip_vertical', False)
             
-            print(f"DEBUG: Image dimensions: {w}x{h}, Texture: {texture_w}x{texture_h}, Offsets: ({offset_x}, {offset_y})")
-            print(f"DEBUG: Flip states - Horizontal: {flip_horizontal}, Vertical: {flip_vertical}")
-            print(f"DEBUG: Input box: {box}, types: {[type(x) for x in box]}")
-            
             # Convert all box coordinates to Python scalars first
             box_scalars = []
             for i, coord in enumerate(box):
@@ -415,7 +372,6 @@ class SegmentationService:
                     else:
                         scalar_val = float(coord)
                     box_scalars.append(scalar_val)
-                    print(f"DEBUG: Converted box[{i}]: {coord} -> {scalar_val}")
                 except Exception as e:
                     print(f"DEBUG: Error converting box[{i}] = {coord}: {e}")
                     return None
@@ -426,22 +382,18 @@ class SegmentationService:
             x2 = max(0, min(w-1, int(box_scalars[2] - offset_x)))
             y2 = max(0, min(h-1, int(box_scalars[3] - offset_y)))
             
-            print(f"DEBUG: Box after texture-to-image transform: [{x1}, {y1}, {x2}, {y2}]")
-            
             # Apply flip transformations to the box coordinates
             if flip_horizontal:
                 # Flip X coordinates: x_new = image_width - x_old
                 x1_flipped = w - 1 - x2  # Right becomes left
                 x2_flipped = w - 1 - x1  # Left becomes right
                 x1, x2 = x1_flipped, x2_flipped
-                print(f"DEBUG: Applied horizontal flip: [{x1}, {y1}, {x2}, {y2}]")
             
             if flip_vertical:
                 # Flip Y coordinates: y_new = image_height - y_old
                 y1_flipped = h - 1 - y2  # Bottom becomes top
                 y2_flipped = h - 1 - y1  # Top becomes bottom
                 y1, y2 = y1_flipped, y2_flipped
-                print(f"DEBUG: Applied vertical flip: [{x1}, {y1}, {x2}, {y2}]")
             
             # Ensure coordinates are in correct order (x1 < x2, y1 < y2)
             if x1 > x2:
@@ -450,15 +402,12 @@ class SegmentationService:
                 y1, y2 = y2, y1
             
             scaled_box = [x1, y1, x2, y2]
-            print(f"DEBUG: Computed scaled_box: {scaled_box}")
             
             # Ensure all coordinates are integers (not numpy types)
             scaled_box = [int(coord) for coord in scaled_box]
-            print(f"DEBUG: Final integer scaled_box: {scaled_box}")
             
             # Validate box dimensions
             if scaled_box[2] <= scaled_box[0] or scaled_box[3] <= scaled_box[1]:
-                print(f"DEBUG: Invalid box dimensions after transformation: {scaled_box}")
                 # Try to create a minimal valid box
                 center_x = (scaled_box[0] + scaled_box[2]) // 2
                 center_y = (scaled_box[1] + scaled_box[3]) // 2
@@ -469,14 +418,11 @@ class SegmentationService:
                     min(w, center_x + min_size//2),
                     min(h, center_y + min_size//2)
                 ]
-                print(f"DEBUG: Created minimal valid box: {scaled_box}")
-            
-            print(f"DEBUG: Final transformed box: {scaled_box}")
+
             return scaled_box
             
         except Exception as e:
             print(f"DEBUG: Exception in transform_texture_coordinates_to_image: {e}")
-            import traceback
             traceback.print_exc()
             return None
     
@@ -503,20 +449,15 @@ class SegmentationService:
         }
     
     def confirm_segmentation_selection(self, pending_box, crop_rotate_ui, app_service):
-        """Confirm segmentation selection and perform segmentation."""
-        print(f"DEBUG: Starting segmentation confirmation, mode={self.segmentation_mode}")
-        
+        """Confirm segmentation selection and perform segmentation."""        
         if not self.segmentation_mode:
             return False, "Segmentation mode is not active"
             
         if not pending_box:
-            print("DEBUG: No pending box, creating default")
             # Try to create a default box
             pending_box = self.create_default_bounding_box(crop_rotate_ui)
             if not pending_box:
                 return False, "No area selected and could not create default selection"
-        
-        print(f"DEBUG: Pending box: {pending_box}")
         
         # Validate box dimensions
         if pending_box["w"] < 10 or pending_box["h"] < 10:
@@ -526,44 +467,32 @@ class SegmentationService:
         box = [pending_box["x"], pending_box["y"], 
                pending_box["x"] + pending_box["w"], 
                pending_box["y"] + pending_box["h"]]
-        print(f"DEBUG: Box coordinates: {box}")
         
         # Transform coordinates
-        print("DEBUG: Transforming coordinates...")
         scaled_box = self.transform_texture_coordinates_to_image(box, crop_rotate_ui)
         if not scaled_box:
             return False, "Could not transform coordinates"
         
-        print(f"DEBUG: Scaled box: {scaled_box}, types: {[type(x) for x in scaled_box]}")
-        
         # Validate transformed box
         try:
-            print("DEBUG: Starting coordinate validation...")
             # Ensure all coordinates are scalar values and finite
             for i, coord in enumerate(scaled_box):
-                print(f"DEBUG: Validating coord {i}: {coord} (type: {type(coord)})")
                 if not isinstance(coord, (int, float, np.integer, np.floating)):
                     return False, f"Invalid coordinate type: {type(coord)}"
                 # Convert numpy scalars to Python scalars for safe comparison
                 coord_val = float(coord) if hasattr(coord, 'item') else coord
-                print(f"DEBUG: Coord {i} value: {coord_val}")
                 if not np.isfinite(coord_val):
                     return False, f"Non-finite coordinate: {coord_val}"
-            print("DEBUG: Coordinate validation passed")
         except Exception as e:
-            print(f"DEBUG: Coordinate validation exception: {e}")
             return False, f"Coordinate validation error: {str(e)}"
         
-        print("DEBUG: Checking box size...")
         try:
             if scaled_box[2] - scaled_box[0] < 10 or scaled_box[3] - scaled_box[1] < 10:
                 return False, "Selection too small relative to image"
         except Exception as e:
-            print(f"DEBUG: Box size check exception: {e}")
             return False, f"Box size validation error: {str(e)}"
         
         # Perform segmentation
-        print("DEBUG: Starting segmentation...")
         try:
             masks, mask_names = app_service.perform_box_segmentation(scaled_box)
             if not masks or len(masks) == 0:
@@ -571,7 +500,6 @@ class SegmentationService:
             
             return True, f"Created {len(masks)} total masks"
         except Exception as e:
-            print(f"DEBUG: Segmentation exception: {e}")
             return False, f"Error: {str(e)}"
 
 
@@ -583,19 +511,14 @@ class ApplicationService:
         self.mask_service = MaskService()
         self._segmentation_service = None  # Lazy-loaded to avoid auto-initialization
         self.ui_state = {}
+        self.main_window = None
     
     @property
     def segmentation_service(self):
         """Lazy-load segmentation service only when explicitly requested."""
         if self._segmentation_service is None:
-            print("🔄 Initializing segmentation service on demand...")
-            self._segmentation_service = SegmentationService()
-            print("✓ Segmentation service ready")
+            self._segmentation_service = SegmentationService(self.main_window)
         return self._segmentation_service
-    
-    def initialize(self):
-        """Initialize the application services."""
-        print("Application services initialized")
     
     def load_image(self, file_path: str, create_ui_components: bool = False) -> Optional[np.ndarray]:
         """Load an image and optionally set up UI components."""
@@ -616,7 +539,7 @@ class ApplicationService:
         # Only create UI components if requested
         if create_ui_components:
             try:
-                crop_ui = self.image_service.create_crop_rotate_ui(image, processor)
+                self.image_service.create_crop_rotate_ui(image, processor)
             except Exception as e:
                 print(f"Warning: Could not create UI components: {e}")
         
@@ -685,116 +608,6 @@ class ApplicationService:
     def get_segmentation_service(self) -> SegmentationService:
         """Get the segmentation service."""
         return self.segmentation_service
-    
-    def setup_ui(self):
-        """Setup the main UI components using modular architecture."""
-        from ui.tool_panel_modular import ModularToolPanel
-        from ui.main_window_production import ProductionMainWindow
-        
-        # Create the modular tool panel
-        self.tool_panel = ModularToolPanel(
-            update_callback=self.update_image_callback,
-            mask_service=self.mask_service,
-            app_service=self
-        )
-        
-        # Create main window with updated callback structure
-        self.main_window = ProductionMainWindow(self)
-        
-        # Setup the main window
-        self.main_window.setup()
-        
-        # Replace the original tool panel with our modular one
-        self.main_window.tool_panel = self.tool_panel
-        self.tool_panel.setup()
-    
-    def update_image_callback(self):
-        """Callback for updating the image when parameters change."""
-        if not self.image_service.image_processor or not self.image_service.crop_rotate_ui:
-            return
-        
-        # Get current tool parameters
-        params = self.tool_panel.get_all_parameters() if hasattr(self, 'tool_panel') else {}
-        
-        # Apply parameters to processor
-        processor = self.image_service.image_processor
-        processor.exposure = params.get('exposure', 0)
-        processor.illumination = params.get('illumination', 0.0)
-        processor.contrast = params.get('contrast', 1.0)
-        processor.shadow = params.get('shadow', 0)
-        processor.highlights = params.get('highlights', 0)
-        processor.whites = params.get('whites', 0)
-        processor.blacks = params.get('blacks', 0)
-        processor.saturation = params.get('saturation', 1.0)
-        processor.texture = params.get('texture', 0)
-        processor.grain = params.get('grain', 0)
-        processor.temperature = params.get('temperature', 0)
-        
-        # Apply all edits
-        updated_image = processor.apply_all_edits()
-        
-        # Apply curves if available
-        curves_data = params.get('curves', None)
-        if curves_data:
-            if isinstance(curves_data, dict) and 'curves' in curves_data:
-                curves = curves_data['curves']
-                interpolation_mode = curves_data.get('interpolation_mode', 'Linear')
-            else:
-                curves = curves_data
-                interpolation_mode = 'Linear'
-            
-            updated_image = processor.apply_rgb_curves(updated_image, curves, interpolation_mode)
-        
-        # Update crop/rotate UI
-        crop_ui = self.image_service.crop_rotate_ui
-        crop_ui.original_image = updated_image
-        crop_ui.update_image(None, None, None)
-        
-        # Update histogram if tool panel exists
-        if hasattr(self, 'tool_panel') and hasattr(self.tool_panel, 'update_histogram'):
-            self.tool_panel.update_histogram(updated_image)
-    
-    def show_load_dialog(self):
-        """Show load dialog callback."""
-        if safe_item_check("file_dialog_load"):
-            dpg.show_item("file_dialog_load")
-    
-    def show_save_dialog(self):
-        """Show save dialog callback."""
-        if safe_item_check("file_dialog_save"):
-            dpg.show_item("file_dialog_save")
-    
-    def save_current_image(self, file_path: str) -> bool:
-        """Save the current processed image."""
-        if not self.image_service.image_processor or not self.image_service.crop_rotate_ui:
-            print("No image to save.")
-            return False
-        
-        try:
-            # Get rotation angle and crop rectangle
-            angle = dpg.get_value("rotation_slider") if safe_item_check("rotation_slider") else 0
-            crop_ui = self.image_service.crop_rotate_ui
-            
-            offset_x = (crop_ui.texture_w - crop_ui.orig_w) // 2
-            offset_y = (crop_ui.texture_h - crop_ui.orig_h) // 2
-            
-            rx = int(crop_ui.user_rect["x"] - offset_x)
-            ry = int(crop_ui.user_rect["y"] - offset_y)
-            rw = int(crop_ui.user_rect["w"])
-            rh = int(crop_ui.user_rect["h"])
-            
-            # Apply crop and rotation
-            cropped = self.image_service.image_processor.crop_rotate_flip(
-                self.image_service.image_processor.current, 
-                (rx, ry, rw, rh), 
-                angle
-            )
-            
-            # Save the image
-            return self.image_service.save_image(file_path, cropped)
-        except Exception as e:
-            print(f"Error saving image: {e}")
-            return False
     
     def cleanup(self):
         """Cleanup all services and free resources."""

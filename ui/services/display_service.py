@@ -9,7 +9,7 @@ Extracted from ProductionMainWindow as part of Phase 3 architectural cleanup.
 import numpy as np
 import cv2
 import dearpygui.dearpygui as dpg
-from typing import Tuple, Optional
+from typing import Optional
 import traceback
 
 from utils.ui_helpers import safe_item_check
@@ -208,8 +208,6 @@ class DisplayService:
             # Get image and texture dimensions
             orig_w = self.orig_w
             orig_h = self.orig_h
-            texture_w = self.current_texture_width
-            texture_h = self.current_texture_height
             image_offset_x = getattr(self, 'image_offset_x', 0)
             image_offset_y = getattr(self, 'image_offset_y', 0)
             
@@ -231,26 +229,11 @@ class DisplayService:
                 # Image is wider relative to plot - fit to plot width
                 display_width = orig_w * padding_factor
                 display_height = display_width / plot_aspect
-                
-                # Center the view on the actual image
-                x_center = image_offset_x + orig_w / 2
-                y_center = image_offset_y + orig_h / 2
-                x_min = x_center - display_width / 2
-                x_max = x_center + display_width / 2
-                y_min = y_center - display_height / 2
-                y_max = y_center + display_height / 2
+
             else:
                 # Image is taller relative to plot - fit to plot height
                 display_height = orig_h * padding_factor
                 display_width = display_height * plot_aspect
-                
-                # Center the view on the actual image
-                x_center = image_offset_x + orig_w / 2
-                y_center = image_offset_y + orig_h / 2
-                x_min = x_center - display_width / 2
-                x_max = x_center + display_width / 2
-                y_min = y_center - display_height / 2
-                y_max = y_center + display_height / 2
             
             # Set the axis limits to center on the actual image
             if safe_item_check(x_axis_tag):
@@ -282,7 +265,6 @@ class DisplayService:
             # Get the y_axis from the plot to add the image series
             plot_children = dpg.get_item_children(image_plot_tag, slot=1)
             if not plot_children or len(plot_children) < 2:
-                print("Error: Could not find y_axis in plot")
                 return False
                 
             y_axis = plot_children[1]  # Second child is the y_axis
@@ -355,15 +337,7 @@ class DisplayService:
                 # Image is taller - fit to plot height
                 display_height = orig_h * padding_factor
                 display_width = display_height * plot_aspect
-            
-            # Center the view on the actual image
-            x_center = image_offset_x + orig_w / 2
-            y_center = image_offset_y + orig_h / 2
-            x_min = x_center - display_width / 2
-            x_max = x_center + display_width / 2
-            y_min = y_center - display_height / 2
-            y_max = y_center + display_height / 2
-            
+    
             # Set axis limits
             dpg.fit_axis_data(x_axis_tag)
             dpg.fit_axis_data(y_axis_tag)
@@ -410,8 +384,6 @@ class DisplayService:
             self.image_offset_x = 0
             self.image_offset_y = 0
             self._updating_display = False
-            
-            print("✓ DisplayService cleanup completed")
             
         except Exception as e:
             print(f"⚠️  Error during DisplayService cleanup: {e}")

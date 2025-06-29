@@ -7,7 +7,7 @@ Note: Direct input handling (mouse/keyboard) is handled by ui/event_handlers.py
 
 import dearpygui.dearpygui as dpg
 import traceback
-from typing import Optional, Dict, Any, Callable
+from typing import Dict, Any, Callable
 
 from utils.ui_helpers import safe_item_check
 
@@ -286,11 +286,9 @@ class EventCoordinator:
     def _perform_automatic_mask_reset(self, masks_panel, current_params):
         """Perform the automatic mask reset operation."""
         mask_index = masks_panel.current_mask_index
-        print(f"🔄 All parameters at defaults - automatically resetting mask {mask_index} to original state")
         
         # Check if we have a base state to restore to
         if mask_index not in masks_panel.mask_base_image_states:
-            print(f"⚠️ No base image state saved for mask {mask_index}, cannot auto-reset")
             return
         
         # Get the processor
@@ -301,12 +299,10 @@ class EventCoordinator:
         # Restore the base image to the saved state before this mask was edited
         saved_base_state = masks_panel.mask_base_image_states[mask_index]
         processor.base_image = saved_base_state.copy()
-        print(f"🔄 Auto-restored base image to state before mask {mask_index} was first edited")
         
         # Clear committed parameters since we've reverted the base image
         if mask_index in masks_panel.mask_committed_params:
             del masks_panel.mask_committed_params[mask_index]
-            print(f"🗑️ Cleared committed parameters for mask {mask_index} (auto-reset)")
         
         # Keep current UI parameters (which should be at defaults) 
         # This allows user to see they're at defaults and start fresh if they want
@@ -316,8 +312,6 @@ class EventCoordinator:
             'parameters': current_params,
             'curves': curves_data
         }
-        
-        print(f"✅ Automatically reset mask {mask_index} to original state")
     
     def update_ui_after_mask_change(self):
         """Update UI components after mask changes (delete/rename)."""
@@ -369,7 +363,6 @@ class EventCoordinator:
         try:
             processor = self.app_service.image_service.image_processor
             if processor and hasattr(processor, param_name):
-                old_value = getattr(processor, param_name)
                 setattr(processor, param_name, value)
                 return True
         except Exception as e:

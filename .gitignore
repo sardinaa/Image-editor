@@ -90,3 +90,4 @@ processing/__pycache__/image_processor.cpython-312.pyc
 ui/__pycache__/curves_panel.cpython-312.pyc
 ui/__pycache__/segmentation.cpython-312.pyc
 processing/__pycache__/file_manager.cpython-312.pyc
+.coveragerc

@@ -4,6 +4,7 @@ Uses component-based architecture for better maintainability.
 """
 import dearpygui.dearpygui as dpg
 from typing import Dict, Any, Optional, Callable
+import traceback
 
 # Import panel components
 from ui.components.base_panel import PanelManager
@@ -278,7 +279,6 @@ class ModularToolPanel:
             
         except Exception as e:
             print(f"Error resetting parameters: {e}")
-            import traceback
             traceback.print_exc()
             # Make sure to re-enable callbacks even if there's an error
             self.enable_parameter_callbacks()
@@ -321,7 +321,6 @@ class ModularToolPanel:
                 masks_panel.update_masks(masks, mask_names)
         except Exception as e:
             print(f"Error in ToolPanel.update_masks: {e}")
-            import traceback
             traceback.print_exc()
     
     def toggle_crop_mode(self, sender, app_data, user_data):
@@ -397,8 +396,6 @@ class ModularToolPanel:
                 if hasattr(panel, 'cleanup'):
                     panel.cleanup()
             
-            print("ModularToolPanel cleanup completed")
-            
         except Exception as e:
             print(f"Error during ModularToolPanel cleanup: {e}")
 
@@ -425,11 +422,6 @@ class ModularToolPanel:
         crop_panel = self.panel_manager.get_panel("crop")
         if crop_panel:
             crop_panel._crop_image(sender, app_data, user_data)
-    
-    def update_histogram(self, image):
-        """Update histogram with new image data."""
-        if self.histogram_panel:
-            self.histogram_panel.update_histogram(image)
     
     def _register_all_deferred_callbacks(self):
         """Register all deferred callbacks and double-click handlers for all panels."""
@@ -501,7 +493,6 @@ class ModularToolPanel:
                         time.sleep(0.05)
                         
                     except Exception as e:
-                        import traceback
                         traceback.print_exc()
                     finally:
                         # Clear reset flag in EventCoordinator
