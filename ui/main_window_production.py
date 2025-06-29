@@ -6,7 +6,7 @@ import traceback
 from typing import Optional
 
 from core.application import ApplicationService
-from ui.tool_panel_modular import ModularToolPanel
+from ui.components.tool_panel_modular import ModularToolPanel
 from ui.crop_rotate import CropRotateUI
 from ui.bounding_box_renderer import BoundingBoxRenderer, BoundingBox
 from ui.mask_overlay_renderer import MaskOverlayRenderer

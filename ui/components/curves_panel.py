@@ -1,5 +1,6 @@
 import dearpygui.dearpygui as dpg
 import numpy as np
+import traceback
 
 class CurvesPanel:
     def __init__(self, callback):

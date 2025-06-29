@@ -1,21 +1,17 @@
-"""
-Refactored modular tool panel.
-Uses component-based architecture for better maintainability.
-"""
 import dearpygui.dearpygui as dpg
 from typing import Dict, Any, Optional, Callable
 import traceback
 
 # Import panel components
-from ui.components.base_panel import PanelManager
-from ui.components.exposure_panel import ExposurePanel
-from ui.components.color_effects_panel import ColorEffectsPanel
-from ui.components.crop_panel import CropPanel
-from ui.components.masks_panel import MasksPanel
+from .base_panel import PanelManager
+from .exposure_panel import ExposurePanel
+from .color_effects_panel import ColorEffectsPanel
+from .crop_panel import CropPanel
+from .masks_panel import MasksPanel
 
 # Import existing specialized panels
-from ui.curves_panel import CurvesPanel
-from ui.histogram_panel import HistogramPanel
+from .curves_panel import CurvesPanel
+from .histogram_panel import HistogramPanel
 
 from utils.ui_helpers import UIStateManager
 

@@ -2,6 +2,7 @@
 import dearpygui.dearpygui as dpg
 import numpy as np
 import cv2
+import time
 
 class HistogramPanel:
     def __init__(self, width=None):

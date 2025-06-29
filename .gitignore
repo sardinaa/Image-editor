@@ -91,3 +91,13 @@ ui/__pycache__/curves_panel.cpython-312.pyc
 ui/__pycache__/segmentation.cpython-312.pyc
 processing/__pycache__/file_manager.cpython-312.pyc
 .coveragerc
+ui/components/__pycache__/__init__.cpython-312.pyc
+ui/components/__pycache__/curves_panel.cpython-312.pyc
+ui/components/__pycache__/histogram_panel.cpython-312.pyc
+ui/components/__pycache__/tool_panel_modular.cpython-312.pyc
+ui/services/__pycache__/image_service.cpython-312.pyc
+ui/services/__pycache__/mask_service.cpython-312.pyc
+ui/services/__pycache__/segmentation_service.cpython-312.pyc
+ui/__pycache__/segmentation.cpython-312.pyc
+processing/__pycache__/image_processor.cpython-312.pyc
+processing/__pycache__/file_manager.cpython-312.pyc
