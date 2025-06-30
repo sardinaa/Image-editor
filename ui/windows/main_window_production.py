@@ -139,6 +139,15 @@ class ProductionMainWindow:
         self._initialize_segmentation_bbox_renderer()
         
         self.mask_overlay_renderer = MaskOverlayRenderer(self.x_axis_tag, self.y_axis_tag)
+        
+        # Configure performance settings for the mask overlay renderer
+        from utils.performance_config import PerformanceConfig
+        perf_config = PerformanceConfig.get_optimized_settings()
+        self.mask_overlay_renderer.set_performance_settings(
+            max_visible=perf_config['max_visible_overlays'],
+            throttle_ms=perf_config['overlay_delay'],
+            progressive=perf_config['progressive_loading']
+        )
     
     def _initialize_segmentation_bbox_renderer(self):
         """Initialize the segmentation bounding box renderer"""

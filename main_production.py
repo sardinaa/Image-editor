@@ -195,6 +195,14 @@ class ProductionImageEditor:
             self.app_service.cleanup()
             self.memory_manager.cleanup_gpu_memory()
             
+            # Clean up performance optimizations
+            if (hasattr(self.main_window, 'tool_panel') and 
+                self.main_window.tool_panel and 
+                hasattr(self.main_window.tool_panel, 'masks_panel')):
+                masks_panel = self.main_window.tool_panel.masks_panel
+                if hasattr(masks_panel, 'cleanup_performance_optimizations'):
+                    masks_panel.cleanup_performance_optimizations()
+            
             dpg.destroy_context()
             
         except Exception as e:

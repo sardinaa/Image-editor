@@ -6,8 +6,13 @@ import dearpygui.dearpygui as dpg
 from typing import Dict, Any, Set, List, Optional
 from ui.components.base_panel import BasePanel
 from utils.ui_helpers import UIStateManager, ControlGroupManager, MaskOverlayManager
+from utils.performance_config import PerformanceConfig
+from utils.mask_cache import PerformanceMaskManager
 import traceback
 import numpy as np
+import asyncio
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 class MasksPanel(BasePanel):
     """Panel for mask management controls."""
@@ -37,13 +42,33 @@ class MasksPanel(BasePanel):
         # Control group manager for mask-related controls
         self.control_groups = ControlGroupManager()
         self._setup_control_groups()
+        
+        # Performance optimization with adaptive settings
+        self.performance_manager = PerformanceMaskManager()
+        perf_config = PerformanceConfig.get_optimized_settings()
+        
+        self.MAX_MASKS_LIMIT = perf_config['max_masks']
+        self.UI_UPDATE_THROTTLE_MS = perf_config['ui_throttle']
+        self.BATCH_SIZE = perf_config['batch_size']
+        self.OVERLAY_UPDATE_DELAY = perf_config['overlay_delay']
+        
+        # Performance state tracking
+        self.last_ui_update = 0
+        self.pending_ui_update = False
+        self.mask_processing_active = False
+        self.current_batch = 0
+        
+        # Async processing with limited workers for better resource management
+        self.executor = ThreadPoolExecutor(max_workers=1)  # Reduced from 2
+        self.segmentation_task = None
     
     def _setup_control_groups(self):
         """Set up control groups for managing UI state."""
         # Mask controls that support enabled property
         mask_controls = [
             "auto_segment_btn", "clear_all_masks_btn", "segmentation_mode",
-            "show_mask_overlay", "delete_mask_btn", "rename_mask_btn", "group_ungroup_btn"
+            "show_mask_overlay", "show_all_masks", "delete_mask_btn", "rename_mask_btn", 
+            "group_ungroup_btn", "reimagine_prompt", "reimagine_btn"
         ]
         self.control_groups.register_group("mask_controls", mask_controls)
         
@@ -56,7 +81,8 @@ class MasksPanel(BasePanel):
         self.parameters = {
             'mask_section_toggle': False,
             'segmentation_mode': False,
-            'show_mask_overlay': True
+            'show_mask_overlay': True,
+            'show_all_masks': False
         }
 
     def draw(self) -> None:
@@ -123,6 +149,18 @@ class MasksPanel(BasePanel):
                 height=20
             )
         
+        # Add mask limit controls
+        with dpg.group(horizontal=True):
+            dpg.add_text("Max Masks:", color=[200, 200, 200])
+            dpg.add_input_int(
+                tag="max_masks_input",
+                default_value=self.MAX_MASKS_LIMIT,
+                min_value=1,
+                max_value=200,
+                width=60,
+                callback=self._on_max_masks_changed
+            )
+        
         # Add tags to buttons for control management
         if dpg.does_item_exist(dpg.last_item()):
             dpg.configure_item(dpg.last_item(), tag="clear_all_masks_btn")
@@ -176,6 +214,16 @@ class MasksPanel(BasePanel):
         if UIStateManager.safe_item_exists("show_mask_overlay"):
             dpg.set_item_callback("show_mask_overlay", self._toggle_mask_overlay)
         
+        # Show all masks checkbox
+        self._create_checkbox(
+            label="Show All Masks",
+            tag="show_all_masks",
+            default=False
+        )
+        
+        if UIStateManager.safe_item_exists("show_all_masks"):
+            dpg.set_item_callback("show_all_masks", self._toggle_show_all_masks)
+        
         dpg.add_spacer(height=5)
         
         # Mask management buttons
@@ -205,10 +253,23 @@ class MasksPanel(BasePanel):
             )
         
         # Add tags for control management
-        button_tags = ["delete_mask_btn", "rename_mask_btn", "group_ungroup_btn"]
+        button_tags = ["delete_mask_btn", "rename_mask_btn", "group_ungroup_btn", "reimagine_btn", "reimagine_prompt"]
         for i, tag in enumerate(button_tags):
             # Note: This is a simplified approach - in practice you'd need to track button creation
             pass
+
+        dpg.add_spacer(height=5)
+
+        # Reimagine selected mask controls
+        self._create_section_header("Reimagine", [200, 200, 200])
+        dpg.add_input_text(label="Prompt", tag="reimagine_prompt", width=-1)
+        self._create_button(
+            label="Reimagine Mask",
+            callback=self._reimagine_selected_mask,
+            width=-1,
+            height=20,
+            tag="reimagine_btn"
+        )
     
     def _draw_mask_table(self):
         """Draw the mask selection table."""
@@ -349,38 +410,384 @@ class MasksPanel(BasePanel):
             self._show_all_mask_overlays()
 
     def _auto_segment(self, sender, app_data, user_data):
-        """Trigger automatic segmentation through application service."""
+        """Trigger optimized automatic segmentation through application service."""
         # Check if masks are enabled
         masks_enabled = UIStateManager.safe_get_value("mask_section_toggle", True)
         
         if not masks_enabled:
             return
         
-        # Show loading indicator
+        # Start threaded segmentation to prevent UI blocking
+        if not self.mask_processing_active:
+            self.segmentation_task = self.executor.submit(self._perform_optimized_auto_segmentation_sync)
+    
+    def _perform_optimized_auto_segmentation_sync(self):
+        """Perform autosegmentation with performance optimizations using threading."""
+        if self.mask_processing_active:
+            return
+            
+        self.mask_processing_active = True
         self._show_segmentation_loading()
         
-        # Use ApplicationService instead of going through main window
-        if self.main_window and self.main_window.app_service:
-            try:
-                masks, names = self.main_window.app_service.perform_automatic_segmentation()
+        try:
+            # Get current image
+            current_image = self.main_window.app_service.image_service.get_current_image()
+            if current_image is None:
+                return
                 
-                # Update the UI
-                self.update_masks(masks, names)
+            # Use crop/rotate UI's processed image if available
+            if (self.main_window.app_service.image_service.crop_rotate_ui and 
+                hasattr(self.main_window.app_service.image_service.crop_rotate_ui, 'original_image')):
+                image_to_segment = self.main_window.app_service.image_service.crop_rotate_ui.original_image
+            else:
+                image_to_segment = current_image
                 
-                # Update mask overlays
-                if self.main_window and hasattr(self.main_window, 'update_mask_overlays'):
-                    self.main_window.update_mask_overlays(masks)
-                
-                self.main_window._update_status(f"Auto segmentation completed: {len(masks)} masks created")
-            except Exception as e:
-                self.main_window._update_status(f"Auto segmentation failed: {str(e)}")
-            finally:
-                # Always hide loading indicator when done
-                self._hide_segmentation_loading()
-        else:
-            self.main_window._update_status("ApplicationService not available for auto segmentation")
-            # Hide loading indicator if service not available
+            # Perform segmentation in current thread
+            masks = self._segment_with_progress_sync(image_to_segment)
+            
+            # Apply mask limit
+            if len(masks) > self.MAX_MASKS_LIMIT:
+                # Sort by quality metrics and keep best masks
+                masks = self._filter_best_masks(masks, self.MAX_MASKS_LIMIT)
+                # Schedule status update on main thread
+                self._schedule_status_update(
+                    f"Limited to {self.MAX_MASKS_LIMIT} best masks (from {len(masks)} total)"
+                )
+            
+            # Update masks incrementally on main thread
+            self._update_masks_incrementally_sync(masks)
+            
+        except Exception as e:
+            self._schedule_status_update(f"Auto segmentation failed: {str(e)}")
+        finally:
+            self.mask_processing_active = False
             self._hide_segmentation_loading()
+    
+    async def _perform_optimized_auto_segmentation(self):
+        """Perform autosegmentation with performance optimizations."""
+        if self.mask_processing_active:
+            return
+            
+        self.mask_processing_active = True
+        self._show_segmentation_loading()
+        
+        try:
+            # Get current image
+            current_image = self.main_window.app_service.image_service.get_current_image()
+            if current_image is None:
+                return
+                
+            # Use crop/rotate UI's processed image if available
+            if (self.main_window.app_service.image_service.crop_rotate_ui and 
+                hasattr(self.main_window.app_service.image_service.crop_rotate_ui, 'original_image')):
+                image_to_segment = self.main_window.app_service.image_service.crop_rotate_ui.original_image
+            else:
+                image_to_segment = current_image
+                
+            # Perform segmentation in background thread with progress updates
+            masks = await self._segment_with_progress(image_to_segment)
+            
+            # Apply mask limit
+            if len(masks) > self.MAX_MASKS_LIMIT:
+                # Sort by quality metrics and keep best masks
+                masks = self._filter_best_masks(masks, self.MAX_MASKS_LIMIT)
+                self.main_window._update_status(
+                    f"Limited to {self.MAX_MASKS_LIMIT} best masks (from {len(masks)} total)"
+                )
+            
+            # Update masks incrementally
+            await self._update_masks_incrementally(masks)
+            
+        except Exception as e:
+            self.main_window._update_status(f"Auto segmentation failed: {str(e)}")
+        finally:
+            self.mask_processing_active = False
+            self._hide_segmentation_loading()
+    
+    async def _segment_with_progress(self, image):
+        """Perform segmentation with progress reporting."""
+        def run_segmentation():
+            try:
+                # Use the existing segmentation service
+                segmentation_service = self.main_window.app_service.get_segmentation_service()
+                return segmentation_service.segment_image(image)
+            except Exception as e:
+                print(f"Segmentation error: {e}")
+                return []
+                
+        # Run segmentation in thread pool
+        loop = asyncio.get_event_loop()
+        masks = await loop.run_in_executor(self.executor, run_segmentation)
+        return masks
+        
+    def _segment_with_progress_sync(self, image):
+        """Perform segmentation with progress reporting (synchronous version)."""
+        try:
+            # Use the existing segmentation service
+            segmentation_service = self.main_window.app_service.get_segmentation_service()
+            return segmentation_service.segment_image(image)
+        except Exception as e:
+            print(f"Segmentation error: {e}")
+            return []
+        
+    def _filter_best_masks(self, masks: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+        """Filter masks to keep only the best ones based on quality metrics."""
+        if not masks:
+            return masks
+        
+        # First apply quality filtering from performance manager
+        if hasattr(self, 'performance_manager'):
+            filtered_masks = self.performance_manager.filter_high_quality_masks(masks)
+            if len(filtered_masks) <= limit:
+                return filtered_masks
+            masks = filtered_masks
+        
+        # Then apply sorting by quality score
+        def mask_quality_score(mask):
+            area = mask.get('area', 0)
+            stability = mask.get('stability_score', 0)
+            iou = mask.get('predicted_iou', 0)
+            
+            # Normalize area (prefer medium-sized masks, not too small or too large)
+            area_score = min(area / 10000, 1.0) if area < 50000 else max(0.5, 1.0 - (area - 50000) / 100000)
+            
+            # Combined score
+            return (stability * 0.4) + (iou * 0.4) + (area_score * 0.2)
+        
+        # Sort by quality score (descending)
+        sorted_masks = sorted(masks, key=mask_quality_score, reverse=True)
+        return sorted_masks[:limit]
+        
+    async def _update_masks_incrementally(self, masks: List[Dict[str, Any]]):
+        """Update masks incrementally to avoid UI freezing."""
+        mask_service = self.main_window.app_service.get_mask_service()
+        
+        # Clear existing masks first
+        mask_service.clear_all_masks()
+        
+        # Add masks in batches
+        current_masks = []
+        for i in range(0, len(masks), self.BATCH_SIZE):
+            batch = masks[i:i + self.BATCH_SIZE]
+            self.current_batch = i // self.BATCH_SIZE + 1
+            total_batches = (len(masks) + self.BATCH_SIZE - 1) // self.BATCH_SIZE
+            
+            # Add current batch to accumulated masks
+            current_masks.extend(batch)
+            
+            # Replace all masks with accumulated masks so far
+            mask_service.replace_all_masks(current_masks)
+                
+            # Update UI with current progress
+            progress_msg = f"Processing masks: batch {self.current_batch}/{total_batches}"
+            self.main_window._update_status(progress_msg)
+            
+            # Throttled UI update
+            await self._throttled_ui_update()
+            
+            # Small delay to prevent UI freezing
+            await asyncio.sleep(0.01)
+            
+        # Final complete update
+        final_masks = mask_service.get_masks()
+        mask_names = mask_service.get_mask_names()
+        
+        # Update UI and overlays
+        self.update_masks(final_masks, mask_names)
+        await self._update_overlays_progressively(final_masks)
+        
+        self.main_window._update_status(
+            f"Auto segmentation completed: {len(final_masks)} masks created"
+        )
+        
+    def _update_masks_incrementally_sync(self, masks: List[Dict[str, Any]]):
+        """Update masks incrementally to avoid UI freezing (synchronous version)."""
+        mask_service = self.main_window.app_service.get_mask_service()
+        
+        # Clear existing masks first
+        mask_service.clear_all_masks()
+        
+        # Add masks in batches with small delays
+        current_masks = []
+        for i in range(0, len(masks), self.BATCH_SIZE):
+            batch = masks[i:i + self.BATCH_SIZE]
+            self.current_batch = i // self.BATCH_SIZE + 1
+            total_batches = (len(masks) + self.BATCH_SIZE - 1) // self.BATCH_SIZE
+            
+            # Add current batch to accumulated masks
+            current_masks.extend(batch)
+            
+            # Replace all masks with accumulated masks so far
+            mask_service.replace_all_masks(current_masks)
+                
+            # Update UI with current progress
+            progress_msg = f"Processing masks: batch {self.current_batch}/{total_batches}"
+            self._schedule_status_update(progress_msg)
+            
+            # Update UI periodically
+            if i % (self.BATCH_SIZE * 2) == 0:  # Every 2 batches
+                self._update_ui_sync()
+            
+            # Small delay to prevent UI freezing
+            time.sleep(0.01)
+            
+        # Final complete update
+        final_masks = mask_service.get_masks()
+        mask_names = mask_service.get_mask_names()
+        
+        # Update UI and overlays on main thread
+        self._schedule_ui_update(final_masks, mask_names)
+        
+        self._schedule_status_update(
+            f"Auto segmentation completed: {len(final_masks)} masks created"
+        )
+        
+    async def _throttled_ui_update(self):
+        """Throttle UI updates to prevent overwhelming the interface."""
+        current_time = time.time() * 1000  # Convert to milliseconds
+        
+        if current_time - self.last_ui_update >= self.UI_UPDATE_THROTTLE_MS:
+            if not self.pending_ui_update:
+                self.pending_ui_update = True
+                
+                # Get current masks for update
+                mask_service = self.main_window.app_service.get_mask_service()
+                current_masks = mask_service.get_masks()
+                mask_names = mask_service.get_mask_names()
+                
+                # Update masks UI
+                self.update_masks(current_masks, mask_names)
+                
+                self.last_ui_update = current_time
+                self.pending_ui_update = False
+                
+                # Small delay to let UI process
+                await asyncio.sleep(0.001)
+                
+    async def _update_overlays_progressively(self, masks: List[Dict[str, Any]]):
+        """Update mask overlays progressively to avoid rendering bottlenecks."""
+        if not hasattr(self.main_window, 'mask_overlay_renderer'):
+            return
+            
+        renderer = self.main_window.mask_overlay_renderer
+        crop_rotate_ui = self.main_window.crop_rotate_ui
+        
+        if not renderer or not crop_rotate_ui:
+            return
+            
+        # Update overlays in smaller batches
+        overlay_batch_size = 5
+        for i in range(0, len(masks), overlay_batch_size):
+            batch = masks[i:i + overlay_batch_size]
+            
+            # Update this batch of overlays
+            renderer.update_mask_overlays(batch, crop_rotate_ui)
+            
+            # Small delay between batches
+            await asyncio.sleep(self.OVERLAY_UPDATE_DELAY / 1000.0)
+    
+    def _schedule_status_update(self, message: str):
+        """Schedule a status update on the main thread."""
+        try:
+            if self.main_window:
+                # For DearPyGUI, we can directly update from background threads
+                self.main_window._update_status(message)
+        except Exception as e:
+            print(f"Error scheduling status update: {e}")
+    
+    def _schedule_ui_update(self, masks: List[Dict[str, Any]], mask_names: List[str]):
+        """Schedule a UI update on the main thread."""
+        try:
+            # Update masks UI
+            self.update_masks(masks, mask_names)
+            
+            # Update overlays progressively
+            self._update_overlays_sync(masks)
+        except Exception as e:
+            print(f"Error scheduling UI update: {e}")
+    
+    def _update_ui_sync(self):
+        """Update UI synchronously."""
+        try:
+            mask_service = self.main_window.app_service.get_mask_service()
+            current_masks = mask_service.get_masks()
+            mask_names = mask_service.get_mask_names()
+            
+            # Update masks UI
+            self.update_masks(current_masks, mask_names)
+        except Exception as e:
+            print(f"Error in sync UI update: {e}")
+    
+    def _update_overlays_sync(self, masks: List[Dict[str, Any]]):
+        """Update mask overlays synchronously."""
+        if not hasattr(self.main_window, 'mask_overlay_renderer'):
+            return
+            
+        renderer = self.main_window.mask_overlay_renderer
+        crop_rotate_ui = self.main_window.crop_rotate_ui
+        
+        if not renderer or not crop_rotate_ui:
+            return
+            
+        try:
+            # Update all overlays at once
+            renderer.update_mask_overlays(masks, crop_rotate_ui)
+        except Exception as e:
+            print(f"Error updating overlays: {e}")
+    
+    def _on_max_masks_changed(self, sender, app_data, user_data):
+        """Handle max masks limit change."""
+        new_limit = max(1, min(app_data, 200))
+        self.MAX_MASKS_LIMIT = new_limit
+        
+        # Update performance manager if available
+        if hasattr(self, 'performance_manager'):
+            self.performance_manager.config['max_masks'] = new_limit
+        
+        self.main_window._update_status(f"Max masks limit set to {new_limit}")
+    
+    def set_performance_mode(self, mode: str):
+        """Set performance mode and update settings accordingly."""
+        from utils.performance_config import PerformanceConfig
+        
+        # Update configuration
+        perf_config = PerformanceConfig.get_optimized_settings(mode)
+        
+        self.MAX_MASKS_LIMIT = perf_config['max_masks']
+        self.UI_UPDATE_THROTTLE_MS = perf_config['ui_throttle']
+        self.BATCH_SIZE = perf_config['batch_size']
+        self.OVERLAY_UPDATE_DELAY = perf_config['overlay_delay']
+        
+        # Update performance manager
+        if hasattr(self, 'performance_manager'):
+            self.performance_manager.config = perf_config
+        
+        # Update UI control if it exists
+        if UIStateManager.safe_item_exists("max_masks_input"):
+            UIStateManager.safe_set_value("max_masks_input", self.MAX_MASKS_LIMIT)
+        
+        self.main_window._update_status(f"Performance mode set to: {mode} (max masks: {self.MAX_MASKS_LIMIT})")
+    
+    def cleanup_performance_optimizations(self):
+        """Clean up performance optimization resources."""
+        if hasattr(self, 'segmentation_task') and self.segmentation_task and not self.segmentation_task.done():
+            self.segmentation_task.cancel()
+        if hasattr(self, 'executor'):
+            self.executor.shutdown(wait=False)
+        self.mask_processing_active = False
+        
+        # Cleanup performance manager cache
+        if hasattr(self, 'performance_manager'):
+            self.performance_manager.cleanup_if_needed()
+    
+    def set_segmentation_limits(self, max_masks: int = 50, batch_size: int = 10):
+        """Configure segmentation performance limits."""
+        self.MAX_MASKS_LIMIT = max(1, min(max_masks, 200))
+        self.BATCH_SIZE = max(1, min(batch_size, 50))
+        
+        # Update UI control if it exists
+        if UIStateManager.safe_item_exists("max_masks_input"):
+            UIStateManager.safe_set_value("max_masks_input", self.MAX_MASKS_LIMIT)
     
     def _clear_all_masks(self, sender, app_data, user_data):
         """Clear all masks through application service."""
@@ -680,6 +1087,46 @@ class MasksPanel(BasePanel):
         # Close the window
         if UIStateManager.safe_item_exists("rename_mask_window"):
             dpg.delete_item("rename_mask_window")
+
+    def _reimagine_selected_mask(self, sender, app_data, user_data):
+        """Regenerate content inside the selected mask using a prompt."""
+        if len(self.selected_mask_indices) != 1:
+            if self.main_window:
+                self.main_window._update_status("Please select exactly one mask to reimagine")
+            return
+
+        mask_index = next(iter(self.selected_mask_indices))
+        prompt = UIStateManager.safe_get_value("reimagine_prompt", "")
+        
+        if not prompt.strip():
+            if self.main_window:
+                self.main_window._update_status("Please enter a prompt for reimagining")
+            return
+        
+        if self.main_window and self.main_window.app_service:
+            try:
+                self.main_window._update_status("Reimagining mask... This may take a few moments.")
+                result = self.main_window.app_service.reimagine_mask(mask_index, prompt)
+                if result is not None:
+                    if self.callback:
+                        self.callback(None, None, None)
+                    self.main_window._update_status(f"Successfully reimagined mask {mask_index}")
+                else:
+                    self.main_window._update_status("Reimagine failed: No result generated")
+            except ValueError as e:
+                self.main_window._update_status(f"Configuration error: {str(e)}")
+            except ImportError as e:
+                self.main_window._update_status(f"Missing dependencies: {str(e)}. Please install diffusers: pip install diffusers")
+            except RuntimeError as e:
+                error_msg = str(e)
+                if "Sizes of tensors must match" in error_msg:
+                    self.main_window._update_status("Model compatibility error. This may be due to diffusers version mismatch. Try: pip install diffusers==0.21.4")
+                elif "Failed to load any generative model" in error_msg:
+                    self.main_window._update_status("Model loading failed. Check internet connection and disk space. The first run may take time to download models.")
+                else:
+                    self.main_window._update_status(f"Model loading error: {error_msg}")
+            except Exception as e:
+                self.main_window._update_status(f"Reimagine failed: {str(e)}")
     
     def _update_mask_overlays_visibility(self):
         """Update the visibility of mask overlays based on selection."""
@@ -701,26 +1148,60 @@ class MasksPanel(BasePanel):
             UIStateManager.safe_get_value("crop_mode", False)):
             return
         
+        # Check if "Show All Masks" is enabled - this overrides normal selection logic
+        show_all_masks = UIStateManager.safe_get_value("show_all_masks", False)
+        
+        # Get all masks
+        if not self.main_window.app_service:
+            return
+        
+        all_masks = self.main_window.app_service.get_mask_service().get_masks()
+        
+        # Use performance manager to get visible masks
+        if hasattr(self, 'performance_manager'):
+            if show_all_masks:
+                visible_masks = self.performance_manager.get_visible_masks(all_masks, set(range(len(all_masks))))
+            else:
+                visible_masks = self.performance_manager.get_visible_masks(all_masks, self.selected_mask_indices)
+        else:
+            # Fallback to old behavior
+            if show_all_masks:
+                visible_masks = all_masks
+            else:
+                visible_masks = [all_masks[i] for i in self.selected_mask_indices if i < len(all_masks)]
+        
         # Use the proper mask overlay renderer instead of MaskOverlayManager
         if hasattr(self.main_window, 'mask_overlay_renderer') and self.main_window.mask_overlay_renderer:
-            total_masks = len(self.main_window.app_service.get_mask_service().get_masks()) if self.main_window.app_service else 0
+            total_masks = len(all_masks)
             
-            if self.selected_mask_indices:
+            # Ensure overlays are created first before trying to show them
+            if total_masks > 0 and hasattr(self.main_window, 'crop_rotate_ui') and self.main_window.crop_rotate_ui:
+                self.main_window.mask_overlay_renderer.update_mask_overlays(all_masks, self.main_window.crop_rotate_ui)
+            
+            if show_all_masks and total_masks > 0:
+                # Show visible subset of all masks
+                visible_indices = list(range(min(len(visible_masks), total_masks)))
+                self.main_window.mask_overlay_renderer.show_selected_masks(visible_indices, total_masks)
+            elif self.selected_mask_indices:
                 if len(self.selected_mask_indices) == 1:
                     # Show single selected mask
                     selected_index = next(iter(self.selected_mask_indices))
                     self.main_window.mask_overlay_renderer.show_selected_mask(selected_index, total_masks)
+                    self.main_window._update_status(f"Showing mask overlay {selected_index}")
                 else:
-                    # Show multiple selected masks (groups or multiple selection)
-                    selected_list = list(self.selected_mask_indices)
+                    # Show multiple selected masks (limited by performance settings)
+                    selected_list = list(self.selected_mask_indices)[:self.performance_manager.config['max_visible_overlays']]
                     self.main_window.mask_overlay_renderer.show_selected_masks(selected_list, total_masks)
+                    self.main_window._update_status(f"Showing {len(selected_list)} mask overlays")
             else:
-                # Hide all masks if none selected
+                # Hide all masks if none selected and show all is not enabled
                 self.main_window.mask_overlay_renderer.show_selected_mask(-1, total_masks)  # -1 means hide all
         else:
-
             # Fallback to old system if renderer not available
-            if hasattr(self.main_window, 'layer_masks'):
+            if show_all_masks and self.main_window.app_service:
+                visible_indices = list(range(len(visible_masks)))
+                MaskOverlayManager.show_selected_overlays(visible_indices)
+            elif hasattr(self.main_window, 'layer_masks'):
                 MaskOverlayManager.hide_all_overlays(len(self.main_window.layer_masks))
                 MaskOverlayManager.show_selected_overlays(list(self.selected_mask_indices))
     
@@ -796,7 +1277,7 @@ class MasksPanel(BasePanel):
                 processor.texture = 0
                 processor.grain = 0
                 processor.temperature = 0
-                
+            
         except Exception as e:
             self.main_window._update_status(f"Error committing edits to base: {e}")
             traceback.print_exc()
@@ -1026,8 +1507,8 @@ class MasksPanel(BasePanel):
         UIStateManager.safe_configure_item("segmentation_controls", show=enabled)
     
     def update_masks(self, masks: List[Dict[str, Any]], mask_names: List[str] = None):
-        """Update the mask table with new masks."""
-        try:           
+        """Update the mask table with new masks - optimized for better performance."""
+        try:
             # Create mask entries with proper names
             if mask_names and len(mask_names) >= len(masks):
                 base_names = mask_names[:len(masks)]
@@ -1044,80 +1525,139 @@ class MasksPanel(BasePanel):
                 else:
                     display_name = base_name
                 display_names.append(display_name)
-                            
-            # First, delete all existing rows
-            # Need to create a list first because we'll be modifying as we iterate
-            rows_to_delete = []
             
-            try:
-                # Get all child items in the mask table
-                children = dpg.get_item_children("mask_table", slot=1)
-                if children:
-                    for item_id in children:
-                        # Safely check if item exists and has an alias
-                        if dpg.does_item_exist(item_id):
-                            try:
-                                # Try to get the alias if it exists
-                                tag = None
-                                try:
-                                    # Get the alias directly - this will return None if no alias exists
-                                    tag = dpg.get_item_alias(item_id)
-                                except:
-                                    # No alias exists, that's fine
-                                    tag = None
-                                    
-                                # If we found a mask row tag, add it to deletion list
-                                if tag and tag.startswith("mask_row_"):
-                                    rows_to_delete.append(item_id)
-                                elif dpg.get_item_type(item_id) == "mvAppItemType::mvTableRow":
-                                    # If it's a table row but doesn't have the expected alias, delete it anyway
-                                    rows_to_delete.append(item_id)
-                            except Exception as e:
-                                print(f"Error checking item alias: {e}")
-                                # If there's an error with alias, use a different approach
-                                # Just delete the item directly if it's a table row
-                                if dpg.get_item_type(item_id) == "mvAppItemType::mvTableRow":
-                                    rows_to_delete.append(item_id)
-            except Exception as e:
-                print(f"Error identifying rows to delete: {e}")
-                # Fallback: delete all children
-                if dpg.does_item_exist("mask_table"):
-                    children = dpg.get_item_children("mask_table", slot=1)
-                    if children:
-                        rows_to_delete = children
+            # Try incremental update first for better performance
+            current_count = len(self.mask_checkboxes)
+            new_count = len(display_names)
             
-            # Now delete all rows
-            for row_id in rows_to_delete:
-                try:
-                    if dpg.does_item_exist(row_id):
-                        dpg.delete_item(row_id)
-                except Exception as e:
-                    print(f"Error deleting row {row_id}: {e}")
-                
-            # Clear our tracking collections
-            self.mask_checkboxes.clear()
-            self.selected_mask_indices.clear()
+            # If count is similar and table exists, try incremental update
+            if abs(current_count - new_count) <= 3 and current_count > 0 and UIStateManager.safe_item_exists("mask_table"):
+                success = self._incremental_table_update(display_names)
+                if success:
+                    self._update_group_button_label()
+                    return
             
-            # Add new rows for each mask
-            for idx, display_name in enumerate(display_names):
-                with dpg.table_row(tag=f"mask_row_{idx}", parent="mask_table"):
-                    # Add the selectable item for this row
-                    dpg.add_selectable(
-                        label=display_name,
-                        tag=f"mask_selectable_{idx}",
-                        callback=self._create_row_callback(idx),
-                        span_columns=True
-                    )
-                
-                # Track the selectable item
-                self.mask_checkboxes[idx] = f"mask_selectable_{idx}"
-            
-            # Update group button label
-            self._update_group_button_label()
+            # Fall back to full table recreation
+            self._full_table_update(display_names)
             
         except Exception as e:
             print(f"Error in MasksPanel.update_masks: {e}")
             traceback.print_exc()
+            # Always try full update as fallback
+            try:
+                self._full_table_update(display_names if 'display_names' in locals() else [])
+            except:
+                pass
+    
+    def _incremental_table_update(self, display_names: List[str]) -> bool:
+        """Attempt incremental table update instead of full recreation."""
+        try:
+            current_count = len(self.mask_checkboxes)
+            new_count = len(display_names)
+            
+            # Update existing items
+            for idx in range(min(current_count, new_count)):
+                selectable_tag = f"mask_selectable_{idx}"
+                if UIStateManager.safe_item_exists(selectable_tag):
+                    UIStateManager.safe_configure_item(selectable_tag, label=display_names[idx])
+                    
+            # Add new items if needed
+            if new_count > current_count:
+                for idx in range(current_count, new_count):
+                    with dpg.table_row(tag=f"mask_row_{idx}", parent="mask_table"):
+                        dpg.add_selectable(
+                            label=display_names[idx],
+                            tag=f"mask_selectable_{idx}",
+                            callback=self._create_row_callback(idx),
+                            span_columns=True
+                        )
+                    self.mask_checkboxes[idx] = f"mask_selectable_{idx}"
+                    
+            # Remove extra items if needed
+            elif new_count < current_count:
+                for idx in range(new_count, current_count):
+                    row_tag = f"mask_row_{idx}"
+                    if UIStateManager.safe_item_exists(row_tag):
+                        dpg.delete_item(row_tag)
+                    if idx in self.mask_checkboxes:
+                        del self.mask_checkboxes[idx]
+                        
+            return True
+            
+        except Exception as e:
+            print(f"Incremental update failed: {e}")
+            return False
+    
+    def _full_table_update(self, display_names: List[str]):
+        """Perform full table recreation when incremental update fails."""
+        # First, delete all existing rows
+        rows_to_delete = []
+        
+        try:
+            # Get all child items in the mask table
+            children = dpg.get_item_children("mask_table", slot=1)
+            if children:
+                for item_id in children:
+                    # Safely check if item exists and has an alias
+                    if dpg.does_item_exist(item_id):
+                        try:
+                            # Try to get the alias if it exists
+                            tag = None
+                            try:
+                                # Get the alias directly - this will return None if no alias exists
+                                tag = dpg.get_item_alias(item_id)
+                            except:
+                                # No alias exists, that's fine
+                                tag = None
+                                
+                            # If we found a mask row tag, add it to deletion list
+                            if tag and tag.startswith("mask_row_"):
+                                rows_to_delete.append(item_id)
+                            elif dpg.get_item_type(item_id) == "mvAppItemType::mvTableRow":
+                                # If it's a table row but doesn't have the expected alias, delete it anyway
+                                rows_to_delete.append(item_id)
+                        except Exception as e:
+                            print(f"Error checking item alias: {e}")
+                            # If there's an error with alias, use a different approach
+                            # Just delete the item directly if it's a table row
+                            if dpg.get_item_type(item_id) == "mvAppItemType::mvTableRow":
+                                rows_to_delete.append(item_id)
+        except Exception as e:
+            print(f"Error identifying rows to delete: {e}")
+            # Fallback: delete all children
+            if dpg.does_item_exist("mask_table"):
+                children = dpg.get_item_children("mask_table", slot=1)
+                if children:
+                    rows_to_delete = children
+        
+        # Now delete all rows
+        for row_id in rows_to_delete:
+            try:
+                if dpg.does_item_exist(row_id):
+                    dpg.delete_item(row_id)
+            except Exception as e:
+                print(f"Error deleting row {row_id}: {e}")
+            
+        # Clear our tracking collections
+        self.mask_checkboxes.clear()
+        self.selected_mask_indices.clear()
+        
+        # Add new rows for each mask
+        for idx, display_name in enumerate(display_names):
+            with dpg.table_row(tag=f"mask_row_{idx}", parent="mask_table"):
+                # Add the selectable item for this row
+                dpg.add_selectable(
+                    label=display_name,
+                    tag=f"mask_selectable_{idx}",
+                    callback=self._create_row_callback(idx),
+                    span_columns=True
+                )
+            
+            # Track the selectable item
+            self.mask_checkboxes[idx] = f"mask_selectable_{idx}"
+        
+        # Update group button label
+        self._update_group_button_label()
     
     def _create_row_callback(self, mask_index: int):
         """Create a proper callback for row selection with correct mask index."""
@@ -1184,6 +1724,10 @@ class MasksPanel(BasePanel):
 
         # Update button label based on selection
         self._update_group_button_label()
+        
+        # Disable "Show All Masks" when user manually selects masks
+        if self.selected_mask_indices:
+            UIStateManager.safe_set_value("show_all_masks", False)
         
         # Update overlay visibility and editing logic
         self._update_mask_overlays_visibility()
@@ -1401,7 +1945,8 @@ class MasksPanel(BasePanel):
         return {
             'mask_section_toggle': UIStateManager.safe_get_value("mask_section_toggle", True),
             'segmentation_mode': UIStateManager.safe_get_value("segmentation_mode", False),
-            'show_mask_overlay': UIStateManager.safe_get_value("show_mask_overlay", True)
+            'show_mask_overlay': UIStateManager.safe_get_value("show_mask_overlay", True),
+            'show_all_masks': UIStateManager.safe_get_value("show_all_masks", False)
         }
     
     def _toggle_group_selected_masks(self, sender, app_data, user_data):
@@ -1646,3 +2191,75 @@ class MasksPanel(BasePanel):
             UIStateManager.safe_configure_item("segmentation_loading_group", show=False)
         except Exception as e:
             print(f"Error hiding segmentation loading indicator: {e}")
+    
+    def cleanup_performance_optimizations(self):
+        """Clean up performance optimization resources."""
+        if self.segmentation_task and not self.segmentation_task.done():
+            self.segmentation_task.cancel()
+        self.executor.shutdown(wait=False)
+        self.mask_processing_active = False
+
+    def __del__(self):
+        """Ensure cleanup when object is destroyed."""
+        try:
+            self.cleanup_performance_optimizations()
+        except:
+            pass  # Ignore errors during cleanup
+    
+    def _toggle_show_all_masks(self, sender, app_data, user_data):
+        """Toggle showing all masks without grouping."""
+        show_all = UIStateManager.safe_get_value("show_all_masks", False)
+        
+        if not self.main_window or not self.main_window.app_service:
+            return
+        
+        # Check if masks are enabled first
+        masks_enabled = UIStateManager.safe_get_value("mask_section_toggle", True)
+        if not masks_enabled:
+            self.main_window._update_status("Cannot show all masks - masks are disabled")
+            # Reset the checkbox if masks are disabled
+            UIStateManager.safe_set_value("show_all_masks", False)
+            return
+        
+        # Check if mask overlay is enabled
+        show_overlay = UIStateManager.safe_get_value("show_mask_overlay", True)
+        if not show_overlay:
+            self.main_window._update_status("Cannot show all masks - mask overlay is disabled")
+            # Reset the checkbox if overlay is disabled
+            UIStateManager.safe_set_value("show_all_masks", False)
+            return
+        
+        # Don't show overlays if crop mode is active
+        if (UIStateManager.safe_item_exists("crop_mode") and 
+            UIStateManager.safe_get_value("crop_mode", False)):
+            self.main_window._update_status("Cannot show all masks - crop mode is active")
+            # Reset the checkbox if crop mode is active
+            UIStateManager.safe_set_value("show_all_masks", False)
+            return
+        
+        masks = self.main_window.app_service.get_mask_service().get_masks()
+        
+        if show_all and masks:
+            # Show all masks without grouping
+            if hasattr(self.main_window, 'mask_overlay_renderer') and self.main_window.mask_overlay_renderer:
+                # Create list of all mask indices
+                all_indices = list(range(len(masks)))
+                self.main_window.mask_overlay_renderer.show_selected_masks(all_indices, len(masks))
+                
+                # Clear any current selection to avoid conflicts
+                self._clear_all_mask_selections()
+                
+                self.main_window._update_status(f"Showing all {len(masks)} masks without grouping")
+            else:
+                # Fallback to old system
+                all_indices = list(range(len(masks)))
+                MaskOverlayManager.show_selected_overlays(all_indices)
+                self.main_window._update_status(f"Showing all {len(masks)} masks (fallback mode)")
+        else:
+            # Hide all masks when disabling "Show All"
+            if hasattr(self.main_window, 'mask_overlay_renderer') and self.main_window.mask_overlay_renderer:
+                self.main_window.mask_overlay_renderer.show_selected_mask(-1, len(masks))
+            else:
+                MaskOverlayManager.hide_all_overlays(len(masks))
+            
+            self.main_window._update_status("All mask overlays hidden")

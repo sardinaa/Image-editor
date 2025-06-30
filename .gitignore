@@ -128,3 +128,4 @@ ui/renderers/__pycache__/mask_overlay_renderer.cpython-312.pyc
 ui/windows/__pycache__/__init__.cpython-312.pyc
 ui/windows/__pycache__/main_window_production.cpython-312.pyc
 utils/__pycache__/__init__.cpython-312.pyc
+assets/models/512-inpainting-ema.ckpt

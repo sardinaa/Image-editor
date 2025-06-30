@@ -9,6 +9,7 @@ from utils.memory_utils import MemoryManager
 from core.services.image_service import ImageService
 from core.services.mask_service import MaskService
 from core.services.segmentation_service import SegmentationService
+from core.services.generative_service import GenerativeService
 
 
 class ApplicationService:
@@ -18,6 +19,7 @@ class ApplicationService:
         self.image_service = ImageService()
         self.mask_service = MaskService()
         self._segmentation_service = None  # Lazy-loaded to avoid auto-initialization
+        self._generative_service = None
         self.ui_state = {}
         self.main_window = None
     
@@ -27,6 +29,21 @@ class ApplicationService:
         if self._segmentation_service is None:
             self._segmentation_service = SegmentationService(self.main_window)
         return self._segmentation_service
+    
+    @property
+    def generative_service(self):
+        """Lazy-load generative service for image synthesis."""
+        if self._generative_service is None:
+            # Try different models in order of preference/compatibility
+            models_to_try = [
+                "runwayml/stable-diffusion-v1-5",            # SD1.5 base (most compatible)
+                "stabilityai/stable-diffusion-xl-base-1.0",  # SDXL - more modern and stable
+                "CompVis/stable-diffusion-v1-4",              # SD1.4 fallback
+                "runwayml/stable-diffusion-inpainting"       # Last resort
+            ]
+            
+            self._generative_service = GenerativeService(model_path=models_to_try[0])
+        return self._generative_service
     
     def load_image(self, file_path: str, create_ui_components: bool = False) -> Optional[np.ndarray]:
         """Load an image and optionally set up UI components."""
@@ -101,6 +118,45 @@ class ApplicationService:
         """Rename a mask."""
         return self.mask_service.rename_mask(mask_index, new_name)
     
+    def reimagine_mask(self, mask_index: int, prompt: str, **generate_kwargs) -> Optional[np.ndarray]:
+        """Regenerate content within the specified mask using a generative model."""
+        masks = self.mask_service.get_masks()
+        if not (0 <= mask_index < len(masks)):
+            return None
+
+        mask = masks[mask_index].get("segmentation")
+        if mask is None:
+            return None
+
+        image = self.image_service.get_processed_image()
+        if image is None:
+            return None
+
+        result = self.generative_service.reimagine(image, mask, prompt, **generate_kwargs)
+        if result is None:
+            return None
+
+        if mask.dtype != bool:
+            mask_bool = mask > 0
+        else:
+            mask_bool = mask
+
+        if result.shape != image.shape:
+            import cv2
+            result = cv2.resize(result, (image.shape[1], image.shape[0]))
+
+        blended = image.copy()
+        blended[mask_bool] = result[mask_bool]
+
+        if self.image_service.image_processor:
+            proc = self.image_service.image_processor
+            proc.base_image = blended.copy()
+            proc.current = blended.copy()
+            proc.clear_optimization_cache()
+        self.image_service.current_image = blended.copy()
+
+        return blended
+    
     def clear_all_masks(self) -> None:
         """Clear all masks and reset image processor to original state."""
         # Clear mask service data
@@ -133,6 +189,9 @@ class ApplicationService:
             # Cleanup segmentation service (frees GPU memory)
             if hasattr(self.segmentation_service, 'cleanup'):
                 self.segmentation_service.cleanup()
+
+            if hasattr(self.generative_service, 'cleanup'):
+                self.generative_service.cleanup()
             
             # Clear CUDA cache
             MemoryManager.clear_cuda_cache()

@@ -11,5 +11,6 @@ from .export_service import ExportService
 from .image_service import ImageService
 from .mask_service import MaskService
 from .segmentation_service import SegmentationService
+from .generative_service import GenerativeService
 
-__all__ = ['DisplayService', 'EventCoordinator', 'ExportService']
+__all__ = ['DisplayService', 'EventCoordinator', 'ExportService', 'GenerativeService']
