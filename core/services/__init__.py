@@ -1,8 +1,8 @@
 """
-UI Services Module
+Core Services Module
 
-Contains specialized services for UI-related operations that were
-extracted from the main window as part of the architectural cleanup.
+Contains specialized services for business logic and application coordination.
+Moved from UI layer to core layer for better separation of concerns.
 """
 
 from .display_service import DisplayService

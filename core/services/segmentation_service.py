@@ -6,7 +6,7 @@ import numpy as np
 import traceback
 
 from utils.memory_utils import MemoryManager, ErrorHandler, ResourceManager
-from ui.segmentation import ImageSegmenter
+from processing.segmentation import ImageSegmenter
 
 
 class SegmentationService:

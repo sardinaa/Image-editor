@@ -41,7 +41,7 @@ class ImageService:
     
     def create_crop_rotate_ui(self, image: np.ndarray, processor):
         """Create crop/rotate UI for the given image."""
-        from ui.crop_rotate import CropRotateUI
+        from ui.interactions.crop_rotate import CropRotateUI
         self.crop_rotate_ui = CropRotateUI(image, processor)
         return self.crop_rotate_ui
     

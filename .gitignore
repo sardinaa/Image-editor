@@ -1,5 +1,5 @@
 /.vscode
-/sample.png
+/assets/sample.png
 processing/__pycache__/image_processor.cpython-312.pyc
 ui/__pycache__/preview_panel.cpython-312.pyc
 ui/__pycache__/tool_panel.cpython-312.pyc
@@ -28,9 +28,9 @@ ui/__pycache__/tool_panel.cpython-312.pyc
 dev features/window.py
 dev features/refactor.py
 dev features/prova.py
-crop.png
-linux.png
-models/sam_vit_h_4b8939.pth
+assets/crop.png
+assets/linux.png
+assets/models/sam_vit_h_4b8939.pth
 ui/__pycache__/curves_panel.cpython-312.pyc
 ui/__pycache__/main_window.cpython-312.pyc
 ui/__pycache__/segmentation.cpython-312.pyc

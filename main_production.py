@@ -15,10 +15,10 @@ import traceback
 sys.path.append(str(Path(__file__).parent))
 
 from core.application import ApplicationService
-from ui.main_window_production import ProductionMainWindow
+from ui.windows.main_window_production import ProductionMainWindow
 from utils.memory_utils import setup_memory_optimization, MemoryManager
 from utils.ui_helpers import setup_ui_theme
-from ui.crop_rotate import CropRotateUI
+from ui.interactions.crop_rotate import CropRotateUI
 from processing.image_processor import ImageProcessor
 
 

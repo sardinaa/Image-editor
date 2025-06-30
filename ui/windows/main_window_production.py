@@ -3,17 +3,18 @@ import dearpygui.dearpygui as dpg
 import cv2
 import numpy as np
 import traceback
+import threading
 from typing import Optional
 
 from core.application import ApplicationService
 from ui.components.tool_panel_modular import ModularToolPanel
-from ui.crop_rotate import CropRotateUI
-from ui.bounding_box_renderer import BoundingBoxRenderer, BoundingBox
-from ui.mask_overlay_renderer import MaskOverlayRenderer
-from ui.services.display_service import DisplayService
-from ui.services.event_coordinator import EventCoordinator
-from ui.event_handlers import EventHandlers
-from ui.services.export_service import ExportService
+from ui.interactions.crop_rotate import CropRotateUI
+from ui.renderers.bounding_box_renderer import BoundingBoxRenderer, BoundingBox
+from ui.renderers.mask_overlay_renderer import MaskOverlayRenderer
+from core.services.display_service import DisplayService
+from core.services.event_coordinator import EventCoordinator
+from ui.interactions.event_handlers import EventHandlers
+from core.services.export_service import ExportService
 from ui.layout_manager import LayoutManager
 from utils.ui_helpers import safe_item_check
 from utils.memory_utils import MemoryManager
@@ -293,6 +294,13 @@ class ProductionMainWindow:
         if dpg.does_item_exist("status_text"):
             dpg.configure_item("status_text", default_value=message)
 
+            # Clear the status text after 5 seconds
+            def clear_status():
+                if dpg.does_item_exist("status_text"):
+                    dpg.configure_item("status_text", default_value="")
+
+            threading.Timer(5.0, clear_status).start()
+    
     def cancel_segmentation_selection(self):
         """Cancel the current segmentation selection"""
         self.disable_segmentation_mode()

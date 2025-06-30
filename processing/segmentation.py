@@ -8,7 +8,7 @@ from utils.memory_utils import MemoryManager, ResourceManager
 class ImageSegmenter:
     def __init__(self, model_type="vit_h", checkpoint=None, device="auto"):
         if checkpoint is None:
-            checkpoint = os.path.join(os.path.dirname(__file__), '../models/sam_vit_h_4b8939.pth')
+            checkpoint = os.path.join(os.path.dirname(__file__), '../assets/models/sam_vit_h_4b8939.pth')
         
         abs_checkpoint_path = os.path.abspath(checkpoint)
         

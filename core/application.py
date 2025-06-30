@@ -6,9 +6,9 @@ from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 
 from utils.memory_utils import MemoryManager
-from ui.services.image_service import ImageService
-from ui.services.mask_service import MaskService
-from ui.services.segmentation_service import SegmentationService
+from core.services.image_service import ImageService
+from core.services.mask_service import MaskService
+from core.services.segmentation_service import SegmentationService
 
 
 class ApplicationService:

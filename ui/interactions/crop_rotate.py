@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import dearpygui.dearpygui as dpg
 import time
-from .bounding_box_renderer import BoundingBoxRenderer, BoundingBox
+from ..renderers.bounding_box_renderer import BoundingBoxRenderer, BoundingBox
 
 class CropRotateUI:
     def __init__(self, image, image_processor):
@@ -210,7 +210,7 @@ class CropRotateUI:
                     else:
                         cropped_image_rgba = cropped_image
 
-                    cv2.imwrite("crop.png", cropped_image_rgba)
+                    cv2.imwrite("assets/crop.png", cropped_image_rgba)
 
                     # Create background and center the cropped image
                     gray_background = np.full((self.texture_h, self.texture_w, 4), 
