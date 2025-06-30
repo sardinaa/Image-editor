@@ -322,6 +322,19 @@ class ProductionMainWindow:
         if masks:
             self.mask_overlay_renderer.show_selected_mask(selected_index, len(masks))
     
+    def show_selected_masks(self, selected_indices):
+        """Show multiple selected masks and hide others"""
+        if not self.mask_overlay_renderer:
+            return
+            
+        if not self.app_service:
+            return
+            
+        # Get masks from service
+        masks = self.app_service.get_mask_service().get_masks()
+        if masks:
+            self.mask_overlay_renderer.show_selected_masks(selected_indices, len(masks))
+    
     def update_mask_overlays(self, masks):
         """Update the visual mask overlays on the image"""
         if self.mask_overlay_renderer:

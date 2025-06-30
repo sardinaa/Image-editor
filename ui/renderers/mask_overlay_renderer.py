@@ -88,6 +88,32 @@ class MaskOverlayRenderer:
             except Exception as e:
                 print(f"Error fitting axis data: {e}")
     
+    def show_selected_masks(self, selected_indices: List[int], total_masks: int) -> None:
+        """
+        Show multiple selected masks and hide others.
+        
+        Args:
+            selected_indices: List of mask indices to show
+            total_masks: Total number of masks available
+        """
+        for idx in range(total_masks):
+            series_tag = f"mask_series_{idx}"
+            if dpg.does_item_exist(series_tag):
+                try:
+                    # Show mask if it's in the selected indices
+                    should_show = idx in selected_indices
+                    dpg.configure_item(series_tag, show=should_show)
+                except Exception as e:
+                    print(f"Error configuring mask {idx}: {e}")
+        
+        # Make sure the axis is properly fit if showing masks
+        if selected_indices:
+            try:
+                dpg.fit_axis_data(self.x_axis_tag)
+                dpg.fit_axis_data(self.y_axis_tag)
+            except Exception as e:
+                print(f"Error fitting axis data: {e}")
+    
     def cleanup_all_mask_overlays(self) -> None:
         """Clean up all mask overlays."""
         # Clean up series for up to 100 masks to handle large accumulations

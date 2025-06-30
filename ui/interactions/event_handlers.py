@@ -315,7 +315,7 @@ class EventHandlers:
         
         # If no bounding box exists, start creating a new one
         if not bbox_renderer.bounding_box:
-            from .bounding_box_renderer import BoundingBox, DragMode, HandleType
+            from ui.renderers.bounding_box_renderer import BoundingBox, DragMode, HandleType
             
             # Create a new bounding box starting from this point
             bbox_renderer.bounding_box = BoundingBox(texture_x, texture_y, 10, 10)
@@ -332,7 +332,7 @@ class EventHandlers:
         # Check for handle hits first (resize mode with direct left-click)
         hit_handle = bbox_renderer.hit_test_handles(texture_x, texture_y)
         if hit_handle:
-            from .bounding_box_renderer import DragMode
+            from ui.renderers.bounding_box_renderer import DragMode
             
             bbox_renderer.is_dragging = True
             bbox_renderer.drag_mode = DragMode.RESIZE
@@ -346,7 +346,7 @@ class EventHandlers:
         
         # Check if clicking inside the box (move mode with direct left-click)
         if bbox_renderer.bounding_box.contains_point(texture_x, texture_y):
-            from .bounding_box_renderer import DragMode
+            from ui.renderers.bounding_box_renderer import DragMode
             
             bbox_renderer.is_dragging = True
             bbox_renderer.drag_mode = DragMode.MOVE
@@ -375,7 +375,7 @@ class EventHandlers:
         mouse_pos = dpg.get_mouse_pos()
         texture_x, texture_y = bbox_renderer.screen_to_texture_coords(mouse_pos[0], mouse_pos[1])
         
-        from .bounding_box_renderer import DragMode
+        from ui.renderers.bounding_box_renderer import DragMode
         
         if bbox_renderer.drag_mode == DragMode.MOVE:
             # Move the entire box
@@ -426,7 +426,7 @@ class EventHandlers:
     
     def _end_bbox_drag(self, bbox_renderer):
         """Helper method to end bounding box drag operation."""
-        from .bounding_box_renderer import DragMode
+        from ui.renderers.bounding_box_renderer import DragMode
         
         bbox_renderer.is_dragging = False
         bbox_renderer.drag_mode = DragMode.NONE

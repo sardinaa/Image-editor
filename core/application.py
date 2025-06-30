@@ -102,8 +102,22 @@ class ApplicationService:
         return self.mask_service.rename_mask(mask_index, new_name)
     
     def clear_all_masks(self) -> None:
-        """Clear all masks."""
+        """Clear all masks and reset image processor to original state."""
+        # Clear mask service data
         self.mask_service.clear_all_masks()
+        
+        # Reset image processor to original state if available
+        if (self.image_service and self.image_service.image_processor):
+            processor = self.image_service.image_processor
+            
+            # Disable mask editing
+            processor.set_mask_editing(False)
+            
+            # Reset base image to original image (removes all committed mask edits)
+            if hasattr(processor, 'original') and processor.original is not None:
+                processor.base_image = processor.original.copy()
+                processor.current = processor.original.copy()
+                processor.clear_optimization_cache()
     
     def get_mask_service(self) -> MaskService:
         """Get the mask service."""

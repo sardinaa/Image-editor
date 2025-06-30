@@ -7,7 +7,7 @@ from typing import Dict, Any, Set, List, Optional
 from ui.components.base_panel import BasePanel
 from utils.ui_helpers import UIStateManager, ControlGroupManager, MaskOverlayManager
 import traceback
-
+import numpy as np
 
 class MasksPanel(BasePanel):
     """Panel for mask management controls."""
@@ -385,16 +385,70 @@ class MasksPanel(BasePanel):
     def _clear_all_masks(self, sender, app_data, user_data):
         """Clear all masks through application service."""
         if self.main_window and self.main_window.app_service:
+            # First, disable mask editing and commit any current edits to prevent data loss
+            if self.mask_editing_enabled:
+                self._commit_current_edits_to_base()
+                self.mask_editing_enabled = False
+                self.current_mask_index = -1
+            
+            # Clear all mask-related state
+            self.mask_params.clear()
+            self.mask_committed_params.clear()
+            self.mask_base_image_states.clear()
+            self.selected_mask_indices.clear()
+            
+            # Clear group data
+            self.mask_groups.clear()
+            self.mask_to_group.clear()
+            
+            # Clear masks through service
             self.main_window.app_service.clear_all_masks()
+            
+            # Reset image processor to original state completely
+            if (self.main_window.app_service.image_service and 
+                self.main_window.app_service.image_service.image_processor):
+                processor = self.main_window.app_service.image_service.image_processor
+                
+                # Disable mask editing first
+                processor.set_mask_editing(False)
+                
+                # Reset base image to original image (removes all committed mask edits)
+                if hasattr(processor, 'original') and processor.original is not None:
+                    processor.base_image = processor.original.copy()
+                    processor.current = processor.original.copy()
+                    processor.clear_optimization_cache()
+                    
+                    # CRITICAL: Reset all processor parameters to defaults
+                    processor.exposure = 0
+                    processor.illumination = 0.0
+                    processor.contrast = 1.0
+                    processor.shadow = 0
+                    processor.highlights = 0
+                    processor.whites = 0
+                    processor.blacks = 0
+                    processor.saturation = 1.0
+                    processor.texture = 0
+                    processor.grain = 0
+                    processor.temperature = 0
+            
+            # Reset UI parameters to defaults and clear global params
+            self._reset_ui_parameters_to_defaults()
+            self.global_params = None  # Clear saved global parameters
             
             # Update the UI
             self.update_masks([], [])
             
-            # Update mask overlays
+            # Clean up mask overlays completely
+            if hasattr(self.main_window, 'mask_overlay_renderer') and self.main_window.mask_overlay_renderer:
+                self.main_window.mask_overlay_renderer.cleanup_all_mask_overlays()
             if hasattr(self.main_window, 'update_mask_overlays'):
                 self.main_window.update_mask_overlays([])
             
-            self.main_window._update_status("✅ All masks cleared")
+            # Force image refresh to show original image without any mask edits
+            if self.callback:
+                self.callback(None, None, None)
+            
+            self.main_window._update_status("All masks cleared and image reset to original")
     
     def _toggle_segmentation_mode(self, sender, app_data, user_data):
         """Toggle unified box selection/segmentation mode."""
@@ -649,16 +703,20 @@ class MasksPanel(BasePanel):
         
         # Use the proper mask overlay renderer instead of MaskOverlayManager
         if hasattr(self.main_window, 'mask_overlay_renderer') and self.main_window.mask_overlay_renderer:
-            if self.selected_mask_indices and len(self.selected_mask_indices) == 1:
-                # Show single selected mask
-                selected_index = next(iter(self.selected_mask_indices))
-                total_masks = len(self.main_window.app_service.get_mask_service().get_masks()) if self.main_window.app_service else 0
-                self.main_window.mask_overlay_renderer.show_selected_mask(selected_index, total_masks)
+            total_masks = len(self.main_window.app_service.get_mask_service().get_masks()) if self.main_window.app_service else 0
+            
+            if self.selected_mask_indices:
+                if len(self.selected_mask_indices) == 1:
+                    # Show single selected mask
+                    selected_index = next(iter(self.selected_mask_indices))
+                    self.main_window.mask_overlay_renderer.show_selected_mask(selected_index, total_masks)
+                else:
+                    # Show multiple selected masks (groups or multiple selection)
+                    selected_list = list(self.selected_mask_indices)
+                    self.main_window.mask_overlay_renderer.show_selected_masks(selected_list, total_masks)
             else:
-                # Hide all masks if multiple selected or none selected
-                total_masks = len(self.main_window.app_service.get_mask_service().get_masks()) if self.main_window.app_service else 0
-                for i in range(total_masks):
-                    self.main_window.mask_overlay_renderer.show_selected_mask(-1, total_masks)  # -1 means hide all
+                # Hide all masks if none selected
+                self.main_window.mask_overlay_renderer.show_selected_mask(-1, total_masks)  # -1 means hide all
         else:
 
             # Fallback to old system if renderer not available
@@ -818,7 +876,7 @@ class MasksPanel(BasePanel):
             # Re-enable callbacks
             tool_panel.enable_parameter_callbacks()
             
-            self.main_window._update_status("✅ UI parameters reset to defaults")
+            self.main_window._update_status("UI parameters reset to defaults")
             
         except Exception as e:
             self.main_window._update_status(f"Error resetting UI parameters: {e}")
@@ -839,7 +897,7 @@ class MasksPanel(BasePanel):
                 'curves': curves_data
             }
             
-            self.main_window._update_status(f"💾 Saved parameters for mask {mask_index}: {len(current_params)} params, curves: {curves_data is not None}")
+            self.main_window._update_status(f"Saved parameters for mask {mask_index}: {len(current_params)} params, curves: {curves_data is not None}")
             
         except Exception as e:
             self.main_window._update_status(f"Error saving parameters for mask {mask_index}: {e}")
@@ -923,7 +981,7 @@ class MasksPanel(BasePanel):
                 'curves': curves_data
             }
             
-            self.main_window._update_status(f"💾 Saved global parameters: {len(current_params)} params, curves: {curves_data is not None}")
+            self.main_window._update_status(f"Saved global parameters: {len(current_params)} params, curves: {curves_data is not None}")
             
         except Exception as e:
             self.main_window._update_status(f"Error saving global parameters: {e}")
@@ -1001,11 +1059,18 @@ class MasksPanel(BasePanel):
                             try:
                                 # Try to get the alias if it exists
                                 tag = None
-                                if dpg.does_alias_exist(item_id):
+                                try:
+                                    # Get the alias directly - this will return None if no alias exists
                                     tag = dpg.get_item_alias(item_id)
+                                except:
+                                    # No alias exists, that's fine
+                                    tag = None
                                     
                                 # If we found a mask row tag, add it to deletion list
                                 if tag and tag.startswith("mask_row_"):
+                                    rows_to_delete.append(item_id)
+                                elif dpg.get_item_type(item_id) == "mvAppItemType::mvTableRow":
+                                    # If it's a table row but doesn't have the expected alias, delete it anyway
                                     rows_to_delete.append(item_id)
                             except Exception as e:
                                 print(f"Error checking item alias: {e}")
