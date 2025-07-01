@@ -68,12 +68,12 @@ class MasksPanel(BasePanel):
         mask_controls = [
             "auto_segment_btn", "clear_all_masks_btn", "segmentation_mode",
             "show_mask_overlay", "show_all_masks", "delete_mask_btn", "rename_mask_btn", 
-            "group_ungroup_btn", "reimagine_prompt", "reimagine_btn"
+            "group_ungroup_btn", "reimagine_prompt", "reimagine_btn", "brush_mode"
         ]
         self.control_groups.register_group("mask_controls", mask_controls)
         
         # Container controls that only support show/hide
-        container_controls = ["segmentation_controls", "mask_table"]
+        container_controls = ["segmentation_controls", "mask_table", "brush_controls_panel"]
         self.control_groups.register_group("mask_containers", container_controls)
     
     def setup(self) -> None:
@@ -82,7 +82,12 @@ class MasksPanel(BasePanel):
             'mask_section_toggle': False,
             'segmentation_mode': False,
             'show_mask_overlay': True,
-            'show_all_masks': False
+            'show_all_masks': False,
+            'brush_mode': False,
+            'brush_size': 20,
+            'brush_opacity': 1.0,
+            'brush_hardness': 0.8,
+            'eraser_mode': False
         }
 
     def draw(self) -> None:
@@ -128,6 +133,9 @@ class MasksPanel(BasePanel):
         # Always ensure segmentation controls are hidden on initialization regardless of masks state
         # This prevents the confirm/cancel buttons from being visible at startup
         UIStateManager.safe_configure_item("segmentation_controls", show=False)
+        
+        # Always ensure brush controls are hidden on initialization
+        UIStateManager.safe_configure_item("brush_controls_panel", show=False)
     
     def _draw_segmentation_controls(self):
         """Draw segmentation control section."""
@@ -198,6 +206,166 @@ class MasksPanel(BasePanel):
                 dpg.add_loading_indicator(tag="segmentation_loading_indicator", style=1, radius=2)
                 dpg.add_text("Processing...", color=[200, 200, 200], tag="segmentation_loading_text")
             dpg.add_spacer(height=3)
+        
+        # Brush tool controls
+        self._draw_brush_controls()
+    
+    def _draw_brush_controls(self):
+        """Draw brush tool controls for manual mask creation."""
+        dpg.add_spacer(height=5)
+        self._create_section_header("Brush Tool", [200, 200, 200])
+        
+        # Brush tool toggle
+        self._create_checkbox(
+            label="Brush Tool",
+            tag="brush_mode",
+            default=False
+        )
+        
+        if UIStateManager.safe_item_exists("brush_mode"):
+            dpg.set_item_callback("brush_mode", self._toggle_brush_mode)
+        
+        # Brush controls panel (initially hidden)
+        with dpg.child_window(
+            tag="brush_controls_panel",
+            height=140,
+            autosize_x=True,
+            show=False,
+            border=False
+        ):
+            # Brush size control
+            self._create_slider_int(
+                label="Brush Size",
+                tag="brush_size",
+                default=20,
+                min_val=1,
+                max_val=100
+            )
+            
+            if UIStateManager.safe_item_exists("brush_size"):
+                dpg.set_item_callback("brush_size", self._on_brush_parameter_change)
+            
+            # Brush opacity control
+            self._create_slider_float(
+                label="Opacity",
+                tag="brush_opacity",
+                default=1.0,
+                min_val=0.1,
+                max_val=1.0
+            )
+            
+            if UIStateManager.safe_item_exists("brush_opacity"):
+                dpg.set_item_callback("brush_opacity", self._on_brush_parameter_change)
+            
+            # Brush hardness control
+            self._create_slider_float(
+                label="Hardness",
+                tag="brush_hardness",
+                default=0.8,
+                min_val=0.0,
+                max_val=1.0
+            )
+            
+            if UIStateManager.safe_item_exists("brush_hardness"):
+                dpg.set_item_callback("brush_hardness", self._on_brush_parameter_change)
+            
+            dpg.add_spacer(height=5)
+            
+            # Eraser mode toggle
+            self._create_checkbox(
+                label="Eraser Mode",
+                tag="eraser_mode",
+                default=False
+            )
+            
+            if UIStateManager.safe_item_exists("eraser_mode"):
+                dpg.set_item_callback("eraser_mode", self._on_brush_parameter_change)
+            
+            dpg.add_spacer(height=5)
+            
+            # Control buttons
+            with dpg.group(horizontal=True):
+                self._create_button(
+                    label="Clear Brush",
+                    callback=self._clear_brush_mask,
+                    width=82,
+                    height=20
+                )
+                
+                self._create_button(
+                    label="Add to Masks",
+                    callback=self._add_brush_mask_to_collection,
+                    width=82,
+                    height=20
+                )
+    
+    def _toggle_brush_mode(self, sender, app_data, user_data):
+        """Toggle brush mode on/off."""
+        current = UIStateManager.safe_get_value("brush_mode", False)
+        
+        # If brush mode is being enabled, disable conflicting modes
+        if current:
+            # Disable crop mode if active
+            if (UIStateManager.safe_item_exists("crop_mode") and 
+                UIStateManager.safe_get_value("crop_mode", False)):
+                UIStateManager.safe_set_value("crop_mode", False)
+                if self.main_window and hasattr(self.main_window, 'tool_panel'):
+                    tool_panel = self.main_window.tool_panel
+                    crop_panel = tool_panel.panel_manager.get_panel("crop")
+                    if crop_panel:
+                        crop_panel.toggle_crop_mode(None, None, None)
+            
+            # Disable segmentation mode if active
+            if (UIStateManager.safe_item_exists("segmentation_mode") and 
+                UIStateManager.safe_get_value("segmentation_mode", False)):
+                UIStateManager.safe_set_value("segmentation_mode", False)
+                self._toggle_segmentation_mode(None, None, None)
+        
+        # Show/hide brush controls panel
+        UIStateManager.safe_configure_item("brush_controls_panel", show=current)
+        
+        # Enable/disable brush mode in main window
+        if self.main_window and hasattr(self.main_window, 'set_brush_mode'):
+            self.main_window.set_brush_mode(current)
+        
+        # Trigger main callback
+        self._param_changed(sender, app_data, user_data)
+    
+    def _on_brush_parameter_change(self, sender, app_data, user_data):
+        """Handle brush parameter changes."""
+        # Update brush parameters in main window
+        if self.main_window and hasattr(self.main_window, '_update_brush_parameters'):
+            self.main_window._update_brush_parameters()
+        
+        # Trigger main callback
+        self._param_changed(sender, app_data, user_data)
+    
+    def _clear_brush_mask(self, sender, app_data, user_data):
+        """Clear the current brush mask."""
+        if self.main_window and hasattr(self.main_window, 'clear_brush_mask'):
+            self.main_window.clear_brush_mask()
+        self._param_changed(sender, app_data, user_data)
+    
+    def _add_brush_mask_to_collection(self, sender, app_data, user_data):
+        """Add the current brush mask to the mask collection."""
+        if self.main_window and hasattr(self.main_window, 'add_brush_mask_to_collection'):
+            success = self.main_window.add_brush_mask_to_collection()
+            if success:
+                # Update the mask table to show the new mask
+                if self.main_window.app_service:
+                    masks = self.main_window.app_service.get_mask_service().get_masks()
+                    mask_names = self.main_window.app_service.get_mask_service().get_mask_names()
+                    self.update_masks(masks, mask_names)
+                    
+                    # Update mask overlays
+                    if hasattr(self.main_window, 'update_mask_overlays'):
+                        self.main_window.update_mask_overlays(masks)
+                
+                self.main_window._update_status("✓ Brush mask added to collection")
+            else:
+                self.main_window._update_status("✗ No brush mask to add")
+        
+        self._param_changed(sender, app_data, user_data)
     
     def _draw_mask_management_controls(self):
         """Draw mask management controls."""
@@ -263,6 +431,36 @@ class MasksPanel(BasePanel):
         # Reimagine selected mask controls
         self._create_section_header("Reimagine", [200, 200, 200])
         dpg.add_input_text(label="Prompt", tag="reimagine_prompt", width=-1)
+        
+        # Inference parameters controls
+        dpg.add_spacer(height=5)
+        
+        self._create_slider_int(
+            label="Inference Steps",
+            tag="reimagine_steps",
+            default=30,
+            min_val=1,
+            max_val=100
+        )
+        
+        self._create_slider_float(
+            label="Guidance Scale",
+            tag="reimagine_guidance",
+            default=7.5,
+            min_val=1.0,
+            max_val=20.0
+        )
+        
+        self._create_slider_float(
+            label="Strength",
+            tag="reimagine_strength",
+            default=0.95,
+            min_val=0.1,
+            max_val=1.0
+        )
+        
+        dpg.add_spacer(height=5)
+        
         self._create_button(
             label="Reimagine Mask",
             callback=self._reimagine_selected_mask,
@@ -332,6 +530,12 @@ class MasksPanel(BasePanel):
             UIStateManager.safe_set_value("segmentation_mode", False)
             if hasattr(self.main_window, 'disable_segmentation_mode'):
                 self.main_window.disable_segmentation_mode()
+        
+        # Disable brush mode
+        if UIStateManager.safe_item_exists("brush_mode"):
+            UIStateManager.safe_set_value("brush_mode", False)
+            if hasattr(self.main_window, 'set_brush_mode'):
+                self.main_window.set_brush_mode(False)
         
         # Ensure segmentation controls are hidden
         UIStateManager.safe_configure_item("segmentation_controls", show=False)
@@ -1103,10 +1307,21 @@ class MasksPanel(BasePanel):
                 self.main_window._update_status("Please enter a prompt for reimagining")
             return
         
+        # Get inference parameters from UI
+        num_inference_steps = UIStateManager.safe_get_value("reimagine_steps", 30)
+        guidance_scale = UIStateManager.safe_get_value("reimagine_guidance", 7.5)
+        strength = UIStateManager.safe_get_value("reimagine_strength", 0.95)
+        
         if self.main_window and self.main_window.app_service:
             try:
                 self.main_window._update_status("Reimagining mask... This may take a few moments.")
-                result = self.main_window.app_service.reimagine_mask(mask_index, prompt)
+                result = self.main_window.app_service.reimagine_mask(
+                    mask_index, 
+                    prompt, 
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    strength=strength
+                )
                 if result is not None:
                     if self.callback:
                         self.callback(None, None, None)
@@ -1665,13 +1880,17 @@ class MasksPanel(BasePanel):
     
     def _mask_row_clicked(self, sender, app_data, user_data, mask_index: int):
         """Handle row clicks for single and multiple selection."""
+        print(f"MasksPanel: Mask row {mask_index} clicked")
+        
         # Check if masks are enabled first - prevent interaction when disabled
         masks_enabled = UIStateManager.safe_get_value("mask_section_toggle", True)
         if not masks_enabled:
+            print("MasksPanel: Masks are disabled, ignoring click")
             return
         
         # Check if Ctrl is pressed for multiple selection
         is_ctrl_pressed = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+        print(f"MasksPanel: Ctrl pressed: {is_ctrl_pressed}")
         
         if is_ctrl_pressed:
             # Multiple selection mode - toggle this mask's selection
@@ -1946,7 +2165,12 @@ class MasksPanel(BasePanel):
             'mask_section_toggle': UIStateManager.safe_get_value("mask_section_toggle", True),
             'segmentation_mode': UIStateManager.safe_get_value("segmentation_mode", False),
             'show_mask_overlay': UIStateManager.safe_get_value("show_mask_overlay", True),
-            'show_all_masks': UIStateManager.safe_get_value("show_all_masks", False)
+            'show_all_masks': UIStateManager.safe_get_value("show_all_masks", False),
+            'brush_mode': UIStateManager.safe_get_value("brush_mode", False),
+            'brush_size': UIStateManager.safe_get_value("brush_size", 20),
+            'brush_opacity': UIStateManager.safe_get_value("brush_opacity", 1.0),
+            'brush_hardness': UIStateManager.safe_get_value("brush_hardness", 0.8),
+            'eraser_mode': UIStateManager.safe_get_value("eraser_mode", False)
         }
     
     def _toggle_group_selected_masks(self, sender, app_data, user_data):

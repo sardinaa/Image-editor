@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import traceback
 import threading
+import time
 from typing import Optional
 
 from core.application import ApplicationService
@@ -11,6 +12,7 @@ from ui.components.tool_panel_modular import ModularToolPanel
 from ui.interactions.crop_rotate import CropRotateUI
 from ui.renderers.bounding_box_renderer import BoundingBoxRenderer, BoundingBox
 from ui.renderers.mask_overlay_renderer import MaskOverlayRenderer
+from ui.renderers.brush_renderer import BrushRenderer
 from core.services.display_service import DisplayService
 from core.services.event_coordinator import EventCoordinator
 from ui.interactions.event_handlers import EventHandlers
@@ -53,6 +55,10 @@ class ProductionMainWindow:
         self.segmentation_mode = False
         self.segmentation_texture = None
         self.pending_segmentation_box = None
+        
+        # Brush tool state
+        self.brush_mode = False
+        self.brush_renderer = None
 
         self.viewport_width = 0
         self.viewport_height = 0
@@ -99,6 +105,7 @@ class ProductionMainWindow:
                 dpg.add_mouse_drag_handler(callback=self.event_handlers.on_mouse_drag, button=dpg.mvMouseButton_Left)
                 dpg.add_mouse_release_handler(callback=self.event_handlers.on_mouse_release, button=dpg.mvMouseButton_Left)
                 dpg.add_mouse_wheel_handler(callback=self.event_handlers.on_mouse_wheel)
+                dpg.add_mouse_move_handler(callback=self.event_handlers.on_mouse_move)
 
                 dpg.add_key_down_handler(callback=self.event_handlers.on_key_press)
     
@@ -139,6 +146,9 @@ class ProductionMainWindow:
         self._initialize_segmentation_bbox_renderer()
         
         self.mask_overlay_renderer = MaskOverlayRenderer(self.x_axis_tag, self.y_axis_tag)
+        
+        # Initialize brush renderer
+        self._initialize_brush_renderer()
         
         # Configure performance settings for the mask overlay renderer
         from utils.performance_config import PerformanceConfig
@@ -423,3 +433,201 @@ class ProductionMainWindow:
         """Handle parameter changes from tool panel - delegate to event coordinator."""
         if hasattr(self, 'event_coordinator') and self.event_coordinator:
             self.event_coordinator.handle_parameter_change(sender, app_data, user_data)
+    
+    def _initialize_brush_renderer(self):
+        """Initialize the brush renderer for drawing masks."""
+        if not self.crop_rotate_ui:
+            return
+            
+        self.brush_renderer = BrushRenderer(
+            texture_width=self.crop_rotate_ui.texture_w,
+            texture_height=self.crop_rotate_ui.texture_h,
+            panel_id=self.central_panel_tag
+        )
+    
+    def set_brush_mode(self, enabled: bool):
+        """Enable or disable brush mode."""
+        self.brush_mode = enabled
+        
+        if enabled and not self.brush_renderer:
+            self._initialize_brush_renderer()
+        
+        if self.brush_renderer:
+            # Update brush parameters from UI
+            self._update_brush_parameters()
+    
+    def _update_brush_parameters(self):
+        """Update brush renderer parameters from UI controls."""
+        if not self.brush_renderer:
+            return
+        
+        from utils.ui_helpers import UIStateManager
+        
+        brush_size = UIStateManager.safe_get_value("brush_size", 20)
+        brush_opacity = UIStateManager.safe_get_value("brush_opacity", 1.0)
+        brush_hardness = UIStateManager.safe_get_value("brush_hardness", 0.8)
+        eraser_mode = UIStateManager.safe_get_value("eraser_mode", False)
+        
+        self.brush_renderer.set_brush_parameters(
+            size=brush_size,
+            opacity=brush_opacity,
+            hardness=brush_hardness,
+            eraser_mode=eraser_mode
+        )
+    
+    def update_brush_display(self):
+        """Update the display with current brush mask overlay - optimized version."""
+        if not self.brush_renderer or not self.crop_rotate_ui:
+            return
+        
+        # Throttle display updates for better performance
+        current_time = time.time() * 1000
+        if current_time - self.brush_renderer.last_display_update < self.brush_renderer.display_update_throttle_ms:
+            # Schedule update if not already pending
+            if not self.brush_renderer._pending_display_update:
+                self.brush_renderer._pending_display_update = True
+                # Use DearPyGui's callback system for better performance
+                dpg.set_frame_callback(1, self._delayed_brush_display_update)
+            return
+        
+        self.brush_renderer.last_display_update = current_time
+        self.brush_renderer._pending_display_update = False
+        
+        self._perform_brush_display_update()
+    
+    def _delayed_brush_display_update(self):
+        """Delayed brush display update for throttling."""
+        if self.brush_renderer and self.brush_renderer._pending_display_update:
+            self._perform_brush_display_update()
+            self.brush_renderer._pending_display_update = False
+    
+    def _perform_brush_display_update(self):
+        """Perform the actual brush display update."""
+        # Get current base texture - try multiple sources (optimized path)
+        base_texture = None
+        
+        # Fast path: try to get existing texture data directly
+        if (dpg.does_item_exist(self.crop_rotate_ui.texture_tag) and 
+            hasattr(self.crop_rotate_ui, 'rotated_texture') and 
+            self.crop_rotate_ui.rotated_texture is not None):
+            base_texture = self.crop_rotate_ui.rotated_texture.copy()
+        
+        # Fallback: reconstruct texture (slower path)
+        elif hasattr(self.crop_rotate_ui, 'original_image') and self.crop_rotate_ui.original_image is not None:
+            image = self.crop_rotate_ui.original_image
+            
+            # Apply current rotation if any
+            angle = 0
+            if dpg.does_item_exist("rotation_slider"):
+                angle = dpg.get_value("rotation_slider")
+            
+            if angle != 0:
+                processed_image = self.crop_rotate_ui.image_processor.rotate_image(image, angle)
+            else:
+                processed_image = image.copy()
+            
+            # Apply flips
+            processed_image = self.crop_rotate_ui.apply_flips_to_image(processed_image)
+            
+            # Create texture background
+            texture_h, texture_w = self.crop_rotate_ui.texture_h, self.crop_rotate_ui.texture_w
+            base_texture = np.full((texture_h, texture_w, 4), [37,37,38,255], dtype=np.uint8)
+            
+            # Convert processed image to RGBA if needed
+            if processed_image.shape[2] == 3:
+                processed_image = cv2.cvtColor(processed_image, cv2.COLOR_RGB2RGBA)
+            
+            # Center the image in the texture
+            img_h, img_w = processed_image.shape[:2]
+            offset_x = (texture_w - img_w) // 2
+            offset_y = (texture_h - img_h) // 2
+            
+            # Place image in texture with bounds checking
+            if offset_y >= 0 and offset_x >= 0 and offset_y + img_h <= texture_h and offset_x + img_w <= texture_w:
+                base_texture[offset_y:offset_y + img_h, offset_x:offset_x + img_w] = processed_image
+
+        if base_texture is None:
+            return
+        
+        # Render brush mask overlay (optimized)
+        overlay_texture = self.brush_renderer.render_mask_overlay(base_texture)
+        
+        # Render cursor overlay if visible (only if cursor is visible)
+        if self.brush_renderer.cursor_visible:
+            overlay_texture = self.brush_renderer.render_cursor_overlay(overlay_texture)
+        
+        # Update texture - direct update without recreation
+        texture_data = overlay_texture.flatten().astype(np.float32) / 255.0
+        if dpg.does_item_exist(self.crop_rotate_ui.texture_tag):
+            dpg.set_value(self.crop_rotate_ui.texture_tag, texture_data)
+    
+    def clear_brush_mask(self):
+        """Clear the current brush mask."""
+        if self.brush_renderer:
+            self.brush_renderer.clear_mask()
+            self.update_brush_display()
+    
+    def add_brush_mask_to_collection(self) -> bool:
+        """Add the current brush mask to the mask collection."""
+        if not self.brush_renderer or not self.crop_rotate_ui:
+            return False
+        
+        # Get the mask scaled for the actual image
+        mask = self.brush_renderer.get_mask_for_image_coords(
+            self.crop_rotate_ui.orig_w,
+            self.crop_rotate_ui.orig_h,
+            self.crop_rotate_ui.offset_x,
+            self.crop_rotate_ui.offset_y
+        )
+        
+        # Check if mask has any content
+        if np.sum(mask) == 0:
+            return False
+        
+        # Add to mask service through app service
+        if self.app_service:
+            mask_service = self.app_service.get_mask_service()
+            if mask_service:
+                # Convert mask to proper format (boolean array for segmentation)
+                binary_mask = (mask > 127).astype(bool)
+                
+                # Create mask data structure
+                mask_data = {
+                    'segmentation': binary_mask,
+                    'area': np.sum(binary_mask),
+                    'bbox': self._calculate_mask_bbox(binary_mask.astype(np.uint8) * 255),
+                    'stability_score': 1.0,  # Manual mask, perfect stability
+                    'predicted_iou': 1.0     # Manual mask, perfect IOU
+                }
+                
+                # Add mask and get updated list
+                mask_service.add_masks([mask_data], [f"Brush Mask {len(mask_service.get_masks()) + 1}"])
+                masks = mask_service.get_masks()
+                
+                # Update UI
+                if self.tool_panel and hasattr(self.tool_panel, 'update_masks'):
+                    self.tool_panel.update_masks(masks)
+                
+                # Update overlays
+                self.update_mask_overlays(masks)
+                
+                # Clear the brush mask after adding
+                self.brush_renderer.clear_mask()
+                self.update_brush_display()
+                
+                return True
+        
+        return False
+    
+    def _calculate_mask_bbox(self, mask):
+        """Calculate bounding box for a mask."""
+        rows = np.any(mask, axis=1)
+        cols = np.any(mask, axis=0)
+        
+        if not np.any(rows) or not np.any(cols):
+            return [0, 0, 0, 0]
+        
+        rmin, rmax = np.where(rows)[0][[0, -1]]
+        cmin, cmax = np.where(cols)[0][[0, -1]]
+        
+        return [int(cmin), int(rmin), int(cmax - cmin), int(rmax - rmin)]

@@ -34,15 +34,10 @@ class ApplicationService:
     def generative_service(self):
         """Lazy-load generative service for image synthesis."""
         if self._generative_service is None:
-            # Try different models in order of preference/compatibility
-            models_to_try = [
-                "runwayml/stable-diffusion-inpainting",       # Last resort
-                "runwayml/stable-diffusion-v1-5",            # SD1.5 base (most compatible)
-                "stabilityai/stable-diffusion-xl-base-1.0",  # SDXL - more modern and stable
-                "CompVis/stable-diffusion-v1-4"              # SD1.4 fallback
-            ]
+            # Only use inpainting models
+            inpainting_model = "runwayml/stable-diffusion-inpainting"
             
-            self._generative_service = GenerativeService(model_path=models_to_try[0])
+            self._generative_service = GenerativeService(model_path=inpainting_model)
         return self._generative_service
     
     def load_image(self, file_path: str, create_ui_components: bool = False) -> Optional[np.ndarray]:

@@ -131,6 +131,13 @@ class ModularToolPanel:
             
             dpg.add_separator()
             
+            # Brush panel
+            brush_panel = self.panel_manager.get_panel("brush")
+            if brush_panel:
+                brush_panel.draw()
+            
+            dpg.add_separator()
+            
             # Exposure panel
             exposure_panel = self.panel_manager.get_panel("exposure")
             if exposure_panel:

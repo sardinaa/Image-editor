@@ -7,7 +7,7 @@ import os
 from utils.memory_utils import MemoryManager, ErrorHandler, ResourceManager
 
 try:
-    from diffusers import StableDiffusionInpaintPipeline, StableDiffusionXLInpaintPipeline, StableDiffusionPipeline
+    from diffusers import StableDiffusionInpaintPipeline, StableDiffusionXLInpaintPipeline
     import torch
     import diffusers
     
@@ -18,7 +18,6 @@ try:
 except Exception as e:  # pragma: no cover - diffusers may not be installed
     StableDiffusionInpaintPipeline = None
     StableDiffusionXLInpaintPipeline = None
-    StableDiffusionPipeline = None
     torch = None
     print(f"Diffusers library not available: {e}")
 
@@ -32,13 +31,10 @@ class GenerativeService:
         self.pipeline = None
         self.resource_manager = ResourceManager()
         
-        # Fallback models to try if the primary model fails
+        # Fallback inpainting models to try if the primary model fails
         # Order them by compatibility - most reliable first
         self.fallback_models = [
-            "runwayml/stable-diffusion-inpainting",       # Last resort inpainting model
-            "runwayml/stable-diffusion-v1-5",            # SD1.5 base (works with img2img approach)
-            "stabilityai/stable-diffusion-xl-base-1.0",  # SDXL - more modern 
-            "CompVis/stable-diffusion-v1-4"             # SD1.4 fallback
+            "runwayml/stable-diffusion-inpainting",       # Most reliable inpainting model
         ]
 
     def _load_pipeline(self):
@@ -78,22 +74,20 @@ class GenerativeService:
                     'requires_safety_checker': False
                 }
                 
-                # Determine pipeline type based on model
+                # Determine pipeline type based on model - only support inpainting models
                 pipeline_class = StableDiffusionInpaintPipeline  # Default
                 
                 if "stable-diffusion-xl" in model_path.lower():
-                    # Try SDXL inpainting first, fallback to regular SDXL
-                    try:
-                        if StableDiffusionXLInpaintPipeline:
-                            pipeline_class = StableDiffusionXLInpaintPipeline
-                            print(f"Using SDXL Inpainting pipeline for {model_path}")
-                    except:
-                        pipeline_class = StableDiffusionPipeline
-                        print(f"SDXL Inpainting not available, using regular SDXL for {model_path}")
+                    # Use SDXL inpainting pipeline if available
+                    if StableDiffusionXLInpaintPipeline:
+                        pipeline_class = StableDiffusionXLInpaintPipeline
+                        print(f"Using SDXL Inpainting pipeline for {model_path}")
+                    else:
+                        print(f"SDXL Inpainting not available, falling back to regular inpainting for {model_path}")
                 elif "inpainting" not in model_path.lower():
-                    # For non-inpainting models, use regular SD pipeline
-                    pipeline_class = StableDiffusionPipeline
-                    print(f"Using regular SD pipeline for non-inpainting model: {model_path}")
+                    # Only accept inpainting models
+                    print(f"Skipping non-inpainting model: {model_path}")
+                    continue
                 
                 # Special handling for different model types
                 if "stable-diffusion-2" in model_path:
@@ -144,35 +138,25 @@ class GenerativeService:
                     test_image = Image.new('RGB', (512, 512), color='white')
                     test_mask = Image.new('L', (512, 512), color='black')
                     
-                    # Test based on pipeline type
-                    if isinstance(self.pipeline, StableDiffusionPipeline):
-                        # Regular SD pipeline - test with text2img
-                        _ = self.pipeline(
-                            prompt="test",
-                            num_inference_steps=1,
-                            output_type="pil"
-                        )
-                    else:
-                        # Inpainting pipeline - test with img2img
-                        _ = self.pipeline(
-                            prompt="test",
-                            image=test_image,
-                            mask_image=test_mask,
-                            num_inference_steps=1,
-                            output_type="pil"
-                        )
+                    # Test inpainting pipeline
+                    _ = self.pipeline(
+                        prompt="test",
+                        image=test_image,
+                        mask_image=test_mask,
+                        num_inference_steps=1,
+                        output_type="pil"
+                    )
                     
                     # Test with a different size to catch size-specific issues
-                    if not isinstance(self.pipeline, StableDiffusionPipeline):
-                        test_image_768 = Image.new('RGB', (768, 512), color='white')
-                        test_mask_768 = Image.new('L', (768, 512), color='black')
-                        _ = self.pipeline(
-                            prompt="test",
-                            image=test_image_768,
-                            mask_image=test_mask_768,
-                            num_inference_steps=1,
-                            output_type="pil"
-                        )
+                    test_image_768 = Image.new('RGB', (768, 512), color='white')
+                    test_mask_768 = Image.new('L', (768, 512), color='black')
+                    _ = self.pipeline(
+                        prompt="test",
+                        image=test_image_768,
+                        mask_image=test_mask_768,
+                        num_inference_steps=1,
+                        output_type="pil"
+                    )
                     
                     print(f"Model {model_path} passed compatibility test")
                 except Exception as test_error:
@@ -239,6 +223,7 @@ class GenerativeService:
         prompt: str,
         num_inference_steps: int = 30,
         guidance_scale: float = 7.5,
+        strength: float = 0.95,
     ) -> np.ndarray:
         """Generate new content for the masked region."""
         pipe = self._load_pipeline()
@@ -355,60 +340,23 @@ class GenerativeService:
                 print(f"Running inference with size: {target_size}")
                 print(f"Using prompt: '{prompt}'")
                 
-                # Check if this is an inpainting pipeline or regular pipeline
-                if isinstance(pipe, StableDiffusionPipeline):
-                    print("Using regular SD pipeline with img2img simulation")
-                    # For regular SD models, we need to simulate inpainting
-                    # We'll use img2img with a modified prompt
-                    
-                    # Create a blended image where the mask area is more neutral
-                    img_array = np.array(img_pil_resized)
-                    mask_array = np.array(mask_pil_resized)
-                    
-                    # Create a version where masked area is averaged/blurred
-                    from PIL import ImageFilter
-                    blurred_img = img_pil_resized.filter(ImageFilter.GaussianBlur(radius=15))
-                    blurred_array = np.array(blurred_img)
-                    
-                    # Blend original and blurred in mask area
-                    mask_norm = mask_array.astype(float) / 255.0
-                    mask_3d = np.stack([mask_norm] * 3, axis=-1)
-                    
-                    prepared_array = img_array * (1 - mask_3d) + blurred_array * mask_3d
-                    prepared_img = Image.fromarray(prepared_array.astype(np.uint8))
-                    
-                    # Enhanced prompt for better guidance
-                    enhanced_prompt = f"high quality, detailed, {prompt}"
-                    negative_prompt = "blurry, low quality, distorted, ugly, deformed"
-                    
-                    # Use img2img with high strength in mask area
-                    result = pipe(
-                        prompt=enhanced_prompt,
-                        negative_prompt=negative_prompt,
-                        image=prepared_img,
-                        strength=0.85,  # High strength for good changes
-                        num_inference_steps=max(30, num_inference_steps),
-                        guidance_scale=max(7.5, guidance_scale),
-                    ).images[0]
-                    
-                else:
-                    print("Using dedicated inpainting pipeline")
-                    # Enhanced prompt for inpainting
-                    enhanced_prompt = f"high quality, detailed, {prompt}"
-                    negative_prompt = "blurry, low quality, distorted, ugly, deformed, artifacts"
-                    
-                    # Use regular inpainting pipeline with enhanced settings
-                    generation_kwargs = {
-                        'prompt': enhanced_prompt,
-                        'negative_prompt': negative_prompt,
-                        'image': img_pil_resized,
-                        'mask_image': mask_pil_resized,
-                        'num_inference_steps': max(30, num_inference_steps),
-                        'guidance_scale': max(7.5, guidance_scale),
-                        'strength': 0.95,  # High strength for inpainting
-                    }
-                    
-                    result = pipe(**generation_kwargs).images[0]
+                print("Using dedicated inpainting pipeline")
+                # Enhanced prompt for inpainting
+                enhanced_prompt = f"high quality, detailed, {prompt}"
+                negative_prompt = "blurry, low quality, distorted, ugly, deformed, artifacts"
+                
+                # Use inpainting pipeline with enhanced settings
+                generation_kwargs = {
+                    'prompt': enhanced_prompt,
+                    'negative_prompt': negative_prompt,
+                    'image': img_pil_resized,
+                    'mask_image': mask_pil_resized,
+                    'num_inference_steps': max(30, num_inference_steps),
+                    'guidance_scale': max(7.5, guidance_scale),
+                    'strength': strength  # Use the parameter instead of hardcoded value
+                }
+                
+                result = pipe(**generation_kwargs).images[0]
                 
                 # Always resize back to original size
                 result_resized = result.resize(original_size, Image.Resampling.LANCZOS)
@@ -438,27 +386,15 @@ class GenerativeService:
                         mask_fallback_array = (mask_fallback_array > 127).astype(np.uint8) * 255
                         mask_fallback = Image.fromarray(mask_fallback_array, mode='L')
                         
-                        if isinstance(pipe, StableDiffusionPipeline):
-                            # Img2img fallback
-                            from PIL import ImageFilter
-                            blurred_fallback = img_fallback.filter(ImageFilter.GaussianBlur(radius=15))
-                            
-                            result = pipe(
-                                prompt=f"detailed, {prompt}",
-                                image=blurred_fallback,
-                                strength=0.8,
-                                num_inference_steps=max(20, num_inference_steps // 2),
-                                guidance_scale=guidance_scale
-                            ).images[0]
-                        else:
-                            # Inpainting fallback
-                            result = pipe(
-                                prompt=f"detailed, {prompt}",
-                                image=img_fallback,
-                                mask_image=mask_fallback,
-                                num_inference_steps=max(20, num_inference_steps // 2),
-                                guidance_scale=guidance_scale
-                            ).images[0]
+                        # Inpainting fallback - only support inpainting pipelines
+                        result = pipe(
+                            prompt=f"detailed, {prompt}",
+                            image=img_fallback,
+                            mask_image=mask_fallback,
+                            num_inference_steps=max(20, num_inference_steps // 2),
+                            guidance_scale=guidance_scale,
+                            strength=strength
+                        ).images[0]
                         
                         # Resize back to original
                         result_resized = result.resize(original_size, Image.Resampling.LANCZOS)
@@ -488,7 +424,8 @@ class GenerativeService:
                                     image=img_fallback,
                                     mask_image=mask_fallback,
                                     num_inference_steps=max(20, num_inference_steps // 2),
-                                    guidance_scale=guidance_scale
+                                    guidance_scale=guidance_scale,
+                                    strength=strength
                                 ).images[0]
                                 
                                 result_resized = result.resize(original_size, Image.Resampling.LANCZOS)

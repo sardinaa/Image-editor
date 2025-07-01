@@ -1,4 +1,5 @@
 import dearpygui.dearpygui as dpg
+import time
 
 class EventHandlers:
     """
@@ -57,7 +58,22 @@ class EventHandlers:
         if not main_window:
             return False
         
-        # Priority 1: Crop mode handling - centralized logic
+        # Priority 1: Brush mode handling
+        if (hasattr(main_window, 'brush_mode') and 
+            main_window.brush_mode and
+            self._check_image_plot_hovered()):
+            
+            if hasattr(main_window, 'brush_renderer') and main_window.brush_renderer:
+                # Get actual mouse position
+                mouse_pos = dpg.get_mouse_pos()
+                texture_x, texture_y = main_window.brush_renderer.screen_to_texture_coords(mouse_pos[0], mouse_pos[1])
+                if main_window.brush_renderer.start_stroke(texture_x, texture_y):
+                    # Update display immediately
+                    if hasattr(main_window, 'update_brush_display'):
+                        main_window.update_brush_display()
+                    return True
+        
+        # Priority 2: Crop mode handling - centralized logic
         if (self._check_crop_mode_active() and 
             hasattr(main_window, 'crop_rotate_ui') and 
             main_window.crop_rotate_ui and
@@ -66,7 +82,7 @@ class EventHandlers:
             # Handle bounding box interactions directly with left-click
             return self._handle_crop_mouse_down(main_window.crop_rotate_ui.bbox_renderer, sender, app_data)
         
-        # Priority 2: Segmentation mode handling
+        # Priority 3: Segmentation mode handling
         if (hasattr(main_window, 'segmentation_mode') and 
             main_window.segmentation_mode and
             hasattr(main_window, 'segmentation_bbox_renderer') and
@@ -75,7 +91,7 @@ class EventHandlers:
             
             return self._handle_crop_mouse_down(main_window.segmentation_bbox_renderer, sender, app_data)
         
-        # Priority 3: Box selection mode handling  
+        # Priority 4: Box selection mode handling  
         if (hasattr(main_window, 'box_selection_mode') and 
             main_window.box_selection_mode and 
             self._check_image_plot_hovered()):
@@ -101,7 +117,22 @@ class EventHandlers:
         if not main_window:
             return False
         
-        # Priority 1: Crop mode handling
+        # Priority 1: Brush mode handling
+        if (hasattr(main_window, 'brush_mode') and 
+            main_window.brush_mode and
+            self._check_image_plot_hovered()):
+            
+            if hasattr(main_window, 'brush_renderer') and main_window.brush_renderer:
+                # Get actual mouse position
+                mouse_pos = dpg.get_mouse_pos()
+                texture_x, texture_y = main_window.brush_renderer.screen_to_texture_coords(mouse_pos[0], mouse_pos[1])
+                if main_window.brush_renderer.continue_stroke(texture_x, texture_y):
+                    # Update display
+                    if hasattr(main_window, 'update_brush_display'):
+                        main_window.update_brush_display()
+                return True
+        
+        # Priority 2: Crop mode handling
         if (self._check_crop_mode_active() and 
             hasattr(main_window, 'crop_rotate_ui') and 
             main_window.crop_rotate_ui and
@@ -113,7 +144,7 @@ class EventHandlers:
                 result = self._handle_crop_mouse_drag(main_window.crop_rotate_ui.bbox_renderer, sender, app_data)
                 return result
         
-        # Priority 2: Segmentation mode handling
+        # Priority 3: Segmentation mode handling
         if (hasattr(main_window, 'segmentation_mode') and 
             main_window.segmentation_mode and
             hasattr(main_window, 'segmentation_bbox_renderer') and
@@ -121,7 +152,7 @@ class EventHandlers:
             
             return self._handle_crop_mouse_drag(main_window.segmentation_bbox_renderer, sender, app_data)
         
-        # Priority 3: Box selection mode handling
+        # Priority 4: Box selection mode handling
         if (hasattr(main_window, 'box_selection_active') and 
             main_window.box_selection_active and 
             self._check_image_plot_hovered()):
@@ -134,13 +165,61 @@ class EventHandlers:
         
         return False
     
+    def on_mouse_move(self, sender, app_data) -> bool:
+        """Handle mouse movement events for brush cursor with optimized performance."""
+        main_window = self._main_window
+        if not main_window:
+            return False
+        
+        # Update brush cursor if brush mode is active
+        if (hasattr(main_window, 'brush_mode') and 
+            main_window.brush_mode and
+            hasattr(main_window, 'brush_renderer') and 
+            main_window.brush_renderer):
+            
+            # Check if mouse is over image area
+            hovering = self._check_image_plot_hovered()
+            
+            if hovering:
+                # Get actual mouse position
+                mouse_pos = dpg.get_mouse_pos()
+                texture_x, texture_y = main_window.brush_renderer.screen_to_texture_coords(mouse_pos[0], mouse_pos[1])
+                main_window.brush_renderer.update_cursor(texture_x, texture_y, True)
+                
+                # Throttle display updates for cursor movement
+                current_time = time.time() * 1000
+                if (current_time - main_window.brush_renderer.last_display_update >= 
+                    main_window.brush_renderer.display_update_throttle_ms):
+                    
+                    # Update display with cursor
+                    if hasattr(main_window, 'update_brush_display'):
+                        main_window.update_brush_display()
+            else:
+                main_window.brush_renderer.update_cursor(0, 0, False)
+            
+            return hovering
+        
+        return False
+    
     def on_mouse_release(self, sender, app_data) -> bool:
         """Handle mouse release events with centralized logic."""
         main_window = self._main_window
         if not main_window:
             return False
         
-        # Priority 1: Crop mode handling
+        # Priority 1: Brush mode handling
+        if (hasattr(main_window, 'brush_mode') and 
+            main_window.brush_mode and
+            hasattr(main_window, 'brush_renderer') and 
+            main_window.brush_renderer):
+            
+            if main_window.brush_renderer.end_stroke():
+                # Update display after completing stroke
+                if hasattr(main_window, 'update_brush_display'):
+                    main_window.update_brush_display()
+                return True
+        
+        # Priority 2: Crop mode handling
         if (self._check_crop_mode_active() and 
             hasattr(main_window, 'crop_rotate_ui') and 
             main_window.crop_rotate_ui):
@@ -159,7 +238,7 @@ class EventHandlers:
                 
                 return result
         
-        # Priority 2: Segmentation mode handling
+        # Priority 3: Segmentation mode handling
         if (hasattr(main_window, 'segmentation_mode') and 
             main_window.segmentation_mode and
             hasattr(main_window, 'segmentation_bbox_renderer') and
@@ -168,7 +247,7 @@ class EventHandlers:
             if self._handle_crop_mouse_release(main_window.segmentation_bbox_renderer, sender, app_data):
                 return True
         
-        # Priority 3: Box selection mode handling
+        # Priority 4: Box selection mode handling
         if (hasattr(main_window, 'box_selection_active') and 
             main_window.box_selection_active):
             

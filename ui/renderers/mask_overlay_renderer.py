@@ -139,6 +139,8 @@ class MaskOverlayRenderer:
             selected_index: Index of the mask to show (-1 to hide all)
             total_masks: Total number of masks available
         """
+        print(f"MaskOverlayRenderer: Showing mask {selected_index} out of {total_masks} total")
+        
         for idx in range(total_masks):
             series_tag = f"mask_series_{idx}"
             if dpg.does_item_exist(series_tag):
@@ -146,14 +148,21 @@ class MaskOverlayRenderer:
                     # Show only the selected mask, hide all if selected_index is -1
                     should_show = (selected_index >= 0 and idx == selected_index)
                     dpg.configure_item(series_tag, show=should_show)
+                    if should_show:
+                        print(f"MaskOverlayRenderer: Showing mask series {idx}")
+                    else:
+                        print(f"MaskOverlayRenderer: Hiding mask series {idx}")
                 except Exception as e:
                     print(f"Error configuring mask {idx}: {e}")
+            else:
+                print(f"MaskOverlayRenderer: Mask series {idx} does not exist")
         
         # Make sure the axis is properly fit if showing a mask
         if 0 <= selected_index < total_masks:
             try:
                 dpg.fit_axis_data(self.x_axis_tag)
                 dpg.fit_axis_data(self.y_axis_tag)
+                print(f"MaskOverlayRenderer: Fitted axis data for mask {selected_index}")
             except Exception as e:
                 print(f"Error fitting axis data: {e}")
     

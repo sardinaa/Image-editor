@@ -11,6 +11,7 @@ from .exposure_panel import ExposurePanel
 from .color_effects_panel import ColorEffectsPanel
 from .crop_panel import CropPanel
 from .masks_panel import MasksPanel
+from .brush_panel import BrushPanel
 from .curves_panel import CurvesPanel
 from .histogram_panel import HistogramPanel
 from .tool_panel_modular import ModularToolPanel, ToolPanel
@@ -22,6 +23,7 @@ __all__ = [
     'ColorEffectsPanel',
     'CropPanel',
     'MasksPanel',
+    'BrushPanel',
     'CurvesPanel',
     'HistogramPanel',
     'ModularToolPanel',
