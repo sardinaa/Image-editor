@@ -129,3 +129,6 @@ ui/windows/__pycache__/__init__.cpython-312.pyc
 ui/windows/__pycache__/main_window_production.cpython-312.pyc
 utils/__pycache__/__init__.cpython-312.pyc
 assets/models/512-inpainting-ema.ckpt
+landscape.jpg
+girl_in_dress.jpeg
+core/services/__pycache__/generative_service.cpython-312.pyc

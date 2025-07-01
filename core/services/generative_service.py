@@ -35,10 +35,10 @@ class GenerativeService:
         # Fallback models to try if the primary model fails
         # Order them by compatibility - most reliable first
         self.fallback_models = [
+            "runwayml/stable-diffusion-inpainting",       # Last resort inpainting model
             "runwayml/stable-diffusion-v1-5",            # SD1.5 base (works with img2img approach)
             "stabilityai/stable-diffusion-xl-base-1.0",  # SDXL - more modern 
-            "CompVis/stable-diffusion-v1-4",             # SD1.4 fallback
-            "runwayml/stable-diffusion-inpainting"       # Last resort inpainting model
+            "CompVis/stable-diffusion-v1-4"             # SD1.4 fallback
         ]
 
     def _load_pipeline(self):
