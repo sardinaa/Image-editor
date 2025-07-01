@@ -2,6 +2,7 @@
 from typing import Optional
 import numpy as np
 from PIL import Image
+import os
 
 from utils.memory_utils import MemoryManager, ErrorHandler, ResourceManager
 
@@ -102,10 +103,19 @@ class GenerativeService:
                     # Original RunwayML model may need different settings
                     load_kwargs['revision'] = "fp16" if dtype == torch.float16 else None
                 
-                self.pipeline = pipeline_class.from_pretrained(
-                    model_path, 
-                    **load_kwargs
-                )
+                # Allow loading from legacy .ckpt or .safetensors files
+                if (os.path.isfile(model_path) and
+                        model_path.endswith((".ckpt", ".safetensors")) and
+                        hasattr(pipeline_class, "from_single_file")):
+                    self.pipeline = pipeline_class.from_single_file(
+                        model_path,
+                        **load_kwargs,
+                    )
+                else:
+                    self.pipeline = pipeline_class.from_pretrained(
+                        model_path,
+                        **load_kwargs
+                    )
                 self.pipeline.to(dev)
                 
                 # Enable memory efficient attention if available
@@ -233,16 +243,57 @@ class GenerativeService:
         """Generate new content for the masked region."""
         pipe = self._load_pipeline()
         
-        # Convert inputs to PIL Images
-        img_pil = Image.fromarray(image)
-        mask_img = mask
-        if mask_img.max() <= 1:
-            mask_img = (mask_img * 255).astype(np.uint8)
-        mask_pil = Image.fromarray(mask_img).convert("L")
+        # Validate inputs
+        if image.shape[:2] != mask.shape[:2]:
+            print(f"Warning: Image shape {image.shape[:2]} != mask shape {mask.shape[:2]}")
+            import cv2
+            mask = cv2.resize(mask.astype(np.uint8), (image.shape[1], image.shape[0]), 
+                             interpolation=cv2.INTER_NEAREST).astype(bool if mask.dtype == bool else mask.dtype)
+        
+        # Check mask validity
+        if not np.any(mask):
+            print("Error: Mask is empty, cannot perform inpainting")
+            return None
+            
+        mask_area_ratio = np.sum(mask) / mask.size
+        print(f"Mask covers {mask_area_ratio:.1%} of the image")
+        
+        if mask_area_ratio < 0.001:  # Less than 0.1%
+            print("Warning: Mask area is very small, inpainting may not be effective")
+        elif mask_area_ratio > 0.8:  # More than 80%
+            print("Warning: Mask area is very large, may affect overall image quality")
+        
+        # Convert inputs to PIL Images with proper preprocessing
+        if image.shape[2] == 4:  # RGBA
+            img_pil = Image.fromarray(image[:, :, :3])  # Remove alpha for processing
+        else:
+            img_pil = Image.fromarray(image)
+        
+        if img_pil.mode != "RGB":
+            img_pil = img_pil.convert("RGB")
+            
+        # Process mask
+        if mask.dtype == bool:
+            mask_img = mask.astype(np.uint8) * 255
+        else:
+            mask_img = mask.copy()
+            if mask_img.max() <= 1:
+                mask_img = (mask_img * 255).astype(np.uint8)
+                
+        # Ensure mask is binary (0 or 255)
+        mask_img = (mask_img > 127).astype(np.uint8) * 255
+        mask_pil = Image.fromarray(mask_img, mode='L')
         
         # Store original size for later restoration
         original_size = img_pil.size
-        print(f"Original image size: {original_size}")
+        print(f"Input image size: {original_size}")
+        print(f"Mask size: {mask_pil.size}")
+        
+        # Validate mask content
+        mask_array_check = np.array(mask_pil)
+        if np.sum(mask_array_check > 0) == 0:
+            print("Error: Processed mask is empty")
+            return None
         
         # For SD2 inpainting models, use standard sizes that work well
         # Common working sizes: 512x512, 768x768, 1024x1024
@@ -281,22 +332,32 @@ class GenerativeService:
         target_size = _get_optimal_size(original_size)
         print(f"Target processing size: {target_size}")
         
-        # Always resize to target size for consistent processing
+        # Always resize to target size for consistent processing, but preserve aspect ratio
         img_pil_resized = img_pil.resize(target_size, Image.Resampling.LANCZOS)
         mask_pil_resized = mask_pil.resize(target_size, Image.Resampling.NEAREST)
         
-        # Ensure mask is properly formatted
+        # Ensure mask is properly formatted after resize
         mask_array = np.array(mask_pil_resized)
-        if mask_array.max() <= 1:
-            mask_array = (mask_array * 255).astype(np.uint8)
+        # Ensure mask remains binary after resize
+        mask_array = (mask_array > 127).astype(np.uint8) * 255
         mask_pil_resized = Image.fromarray(mask_array, mode='L')
+        
+        # Final validation
+        final_mask_check = np.array(mask_pil_resized)
+        if np.sum(final_mask_check > 0) == 0:
+            print("Error: Mask became empty after resize")
+            return None
+            
+        print(f"Final mask area after resize: {np.sum(final_mask_check > 0)} pixels")
 
         def _run():
             try:
                 print(f"Running inference with size: {target_size}")
+                print(f"Using prompt: '{prompt}'")
                 
                 # Check if this is an inpainting pipeline or regular pipeline
                 if isinstance(pipe, StableDiffusionPipeline):
+                    print("Using regular SD pipeline with img2img simulation")
                     # For regular SD models, we need to simulate inpainting
                     # We'll use img2img with a modified prompt
                     
@@ -306,7 +367,7 @@ class GenerativeService:
                     
                     # Create a version where masked area is averaged/blurred
                     from PIL import ImageFilter
-                    blurred_img = img_pil_resized.filter(ImageFilter.GaussianBlur(radius=10))
+                    blurred_img = img_pil_resized.filter(ImageFilter.GaussianBlur(radius=15))
                     blurred_array = np.array(blurred_img)
                     
                     # Blend original and blurred in mask area
@@ -316,23 +377,35 @@ class GenerativeService:
                     prepared_array = img_array * (1 - mask_3d) + blurred_array * mask_3d
                     prepared_img = Image.fromarray(prepared_array.astype(np.uint8))
                     
+                    # Enhanced prompt for better guidance
+                    enhanced_prompt = f"high quality, detailed, {prompt}"
+                    negative_prompt = "blurry, low quality, distorted, ugly, deformed"
+                    
                     # Use img2img with high strength in mask area
                     result = pipe(
-                        prompt=prompt,
+                        prompt=enhanced_prompt,
+                        negative_prompt=negative_prompt,
                         image=prepared_img,
-                        strength=0.8,  # High strength for good changes
-                        num_inference_steps=num_inference_steps,
-                        guidance_scale=guidance_scale,
+                        strength=0.85,  # High strength for good changes
+                        num_inference_steps=max(30, num_inference_steps),
+                        guidance_scale=max(7.5, guidance_scale),
                     ).images[0]
                     
                 else:
-                    # Use regular inpainting pipeline
+                    print("Using dedicated inpainting pipeline")
+                    # Enhanced prompt for inpainting
+                    enhanced_prompt = f"high quality, detailed, {prompt}"
+                    negative_prompt = "blurry, low quality, distorted, ugly, deformed, artifacts"
+                    
+                    # Use regular inpainting pipeline with enhanced settings
                     generation_kwargs = {
-                        'prompt': prompt,
+                        'prompt': enhanced_prompt,
+                        'negative_prompt': negative_prompt,
                         'image': img_pil_resized,
                         'mask_image': mask_pil_resized,
-                        'num_inference_steps': num_inference_steps,
-                        'guidance_scale': guidance_scale,
+                        'num_inference_steps': max(30, num_inference_steps),
+                        'guidance_scale': max(7.5, guidance_scale),
+                        'strength': 0.95,  # High strength for inpainting
                     }
                     
                     result = pipe(**generation_kwargs).images[0]
@@ -360,13 +433,32 @@ class GenerativeService:
                         img_fallback = img_pil.resize(fallback_size, Image.Resampling.LANCZOS)
                         mask_fallback = mask_pil.resize(fallback_size, Image.Resampling.NEAREST)
                         
-                        result = pipe(
-                            prompt=prompt,
-                            image=img_fallback,
-                            mask_image=mask_fallback,
-                            num_inference_steps=max(20, num_inference_steps // 2),  # Reduce steps for fallback
-                            guidance_scale=guidance_scale
-                        ).images[0]
+                        # Ensure mask is still binary after resize
+                        mask_fallback_array = np.array(mask_fallback)
+                        mask_fallback_array = (mask_fallback_array > 127).astype(np.uint8) * 255
+                        mask_fallback = Image.fromarray(mask_fallback_array, mode='L')
+                        
+                        if isinstance(pipe, StableDiffusionPipeline):
+                            # Img2img fallback
+                            from PIL import ImageFilter
+                            blurred_fallback = img_fallback.filter(ImageFilter.GaussianBlur(radius=15))
+                            
+                            result = pipe(
+                                prompt=f"detailed, {prompt}",
+                                image=blurred_fallback,
+                                strength=0.8,
+                                num_inference_steps=max(20, num_inference_steps // 2),
+                                guidance_scale=guidance_scale
+                            ).images[0]
+                        else:
+                            # Inpainting fallback
+                            result = pipe(
+                                prompt=f"detailed, {prompt}",
+                                image=img_fallback,
+                                mask_image=mask_fallback,
+                                num_inference_steps=max(20, num_inference_steps // 2),
+                                guidance_scale=guidance_scale
+                            ).images[0]
                         
                         # Resize back to original
                         result_resized = result.resize(original_size, Image.Resampling.LANCZOS)
