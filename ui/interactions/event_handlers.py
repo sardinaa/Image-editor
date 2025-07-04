@@ -392,6 +392,9 @@ class EventHandlers:
         mouse_pos = dpg.get_mouse_pos()
         texture_x, texture_y = bbox_renderer.screen_to_texture_coords(mouse_pos[0], mouse_pos[1])
         
+        # Check if Ctrl key is pressed
+        ctrl_pressed = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+        
         # If no bounding box exists, start creating a new one
         if not bbox_renderer.bounding_box:
             from ui.renderers.bounding_box_renderer import BoundingBox, DragMode, HandleType
@@ -408,23 +411,8 @@ class EventHandlers:
                 bbox_renderer.on_start_drag_callback()
             return True
         
-        # Check for handle hits first (resize mode with direct left-click)
-        hit_handle = bbox_renderer.hit_test_handles(texture_x, texture_y)
-        if hit_handle:
-            from ui.renderers.bounding_box_renderer import DragMode
-            
-            bbox_renderer.is_dragging = True
-            bbox_renderer.drag_mode = DragMode.RESIZE
-            bbox_renderer.drag_handle = hit_handle
-            bbox_renderer.drag_start_mouse = (texture_x, texture_y)
-            bbox_renderer.drag_start_box = bbox_renderer.bounding_box.copy()
-            
-            if bbox_renderer.on_start_drag_callback:
-                bbox_renderer.on_start_drag_callback()
-            return True
-        
-        # Check if clicking inside the box (move mode with direct left-click)
-        if bbox_renderer.bounding_box.contains_point(texture_x, texture_y):
+        # If Ctrl is pressed, prioritize move mode over resize handles
+        if ctrl_pressed and bbox_renderer.bounding_box.contains_point(texture_x, texture_y):
             from ui.renderers.bounding_box_renderer import DragMode
             
             bbox_renderer.is_dragging = True
@@ -435,6 +423,22 @@ class EventHandlers:
             if bbox_renderer.on_start_drag_callback:
                 bbox_renderer.on_start_drag_callback()
             return True
+        
+        # Check for handle hits only when Ctrl is NOT pressed (resize mode with direct left-click)
+        if not ctrl_pressed:
+            hit_handle = bbox_renderer.hit_test_handles(texture_x, texture_y)
+            if hit_handle:
+                from ui.renderers.bounding_box_renderer import DragMode
+                
+                bbox_renderer.is_dragging = True
+                bbox_renderer.drag_mode = DragMode.RESIZE
+                bbox_renderer.drag_handle = hit_handle
+                bbox_renderer.drag_start_mouse = (texture_x, texture_y)
+                bbox_renderer.drag_start_box = bbox_renderer.bounding_box.copy()
+                
+                if bbox_renderer.on_start_drag_callback:
+                    bbox_renderer.on_start_drag_callback()
+                return True
         
         return False
     

@@ -87,9 +87,29 @@ class CropRotateUI:
     def _update_bounding_box_from_max_rect(self) -> None:
         """Update the bounding box renderer with the calculated max rect."""
         if self.max_rect:
-            # Convert to BoundingBox and set bounds
+            # Convert to BoundingBox for the maximum inscribed rectangle
             max_bbox = BoundingBox.from_dict(self.max_rect)
-            self.bbox_renderer.set_bounds(max_bbox)
+            
+            # Set bounds to the actual rotated image area, ensuring we don't exceed image limits
+            if hasattr(self, 'rot_w') and hasattr(self, 'rot_h') and hasattr(self, 'offset_x') and hasattr(self, 'offset_y'):
+                # Calculate the actual bounds of the rotated image within the texture
+                # Ensure we don't exceed texture boundaries
+                bounds_x = max(0, self.offset_x)
+                bounds_y = max(0, self.offset_y)
+                bounds_width = min(self.rot_w, self.texture_w - bounds_x)
+                bounds_height = min(self.rot_h, self.texture_h - bounds_y)
+                
+                # Create bounds that represent the actual image area
+                image_bounds = BoundingBox(
+                    x=bounds_x,
+                    y=bounds_y, 
+                    width=bounds_width,
+                    height=bounds_height
+                )
+                self.bbox_renderer.set_bounds(image_bounds)
+            else:
+                # Fallback to max rect bounds if rotated dimensions aren't available
+                self.bbox_renderer.set_bounds(max_bbox)
             
             # Set current bounding box if not set or if angle changed
             if not self.bbox_renderer.bounding_box or (not self.drag_active and hasattr(self, 'prev_angle')):

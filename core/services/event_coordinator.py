@@ -283,7 +283,7 @@ class EventCoordinator:
         """Perform the automatic mask reset operation."""
         mask_index = masks_panel.current_mask_index
         
-        # Check if we have a base state to restore to
+        # Check if we have a mask being edited
         if mask_index not in masks_panel.mask_base_image_states:
             return
         
@@ -292,13 +292,19 @@ class EventCoordinator:
         if not processor:
             return
         
-        # Restore the base image to the saved state before this mask was edited
-        saved_base_state = masks_panel.mask_base_image_states[mask_index]
-        processor.base_image = saved_base_state.copy()
+        # Get the current mask ID for this mask index
+        mask_id = f"mask_{mask_index}"
         
-        # Clear committed parameters since we've reverted the base image
+        # Clear committed edits for this mask from the processor
+        if mask_id in processor.committed_mask_edits:
+            del processor.committed_mask_edits[mask_id]
+        
+        # Clear committed parameters from the masks panel
         if mask_index in masks_panel.mask_committed_params:
             del masks_panel.mask_committed_params[mask_index]
+        
+        # Reset current parameters to defaults (they should already be at defaults)
+        processor.reset_current_parameters()
         
         # Keep current UI parameters (which should be at defaults) 
         # This allows user to see they're at defaults and start fresh if they want

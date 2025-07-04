@@ -8,84 +8,223 @@ class ImageProcessor:
         """
         self.original = image.copy()
         self.current = image.copy()
-        # Base image for cumulative editing - starts as original but gets updated
-        # when we finish editing a mask or apply global edits
-        self.base_image = image.copy()
         
-        # Default parameters
+        # Complete edit history - all edits are stored and reapplied from original
+        self.committed_global_edits = {
+            'exposure': 0,
+            'illumination': 0,
+            'contrast': 1.0,
+            'shadow': 0,
+            'highlights': 0,
+            'whites': 0,
+            'blacks': 0,
+            'saturation': 1.0,
+            'texture': 0,
+            'grain': 0,
+            'temperature': 0,
+            'curves_data': None
+        }
+        
+        # Committed mask edits - stored per mask
+        self.committed_mask_edits = {}  # mask_id -> edit_data
+        
+        # Current editing parameters (temporary, not yet committed)
         self.exposure = 0
         self.illumination = 0
         self.contrast = 1.0
         self.shadow = 0
-        self.highlights = 0  # Add highlights parameter
+        self.highlights = 0
         self.whites = 0
         self.blacks = 0
         self.saturation = 1.0
         self.texture = 0
         self.grain = 0
         self.temperature = 0
-        self.rgb_curves = None  # Placeholder for custom curves
-        self.curves_data = None  # RGB curves data from UI
+        self.curves_data = None
         
         # Mask editing properties
         self.mask_editing_enabled = False
         self.current_mask = None
+        self.current_mask_id = None
         
         # Optimization tracking
-        self.cached_states = {}  # Cache intermediate processing states
-        self.last_parameters = {
-            'exposure': 0, 'illumination': 0, 'contrast': 1.0, 'shadow': 0,
-            'highlights': 0, 'whites': 0, 'blacks': 0, 'saturation': 1.0,
-            'texture': 0, 'grain': 0, 'temperature': 0, 'curves_data': None
-        }
-        self.enable_optimization = True  # Flag to enable/disable optimization
+        self.cached_states = {}
+        self.last_full_state_hash = None
+        self.enable_optimization = True
 
     def reset(self):
+        """Reset all edits and return to original image."""
         self.current = self.original.copy()
-        self.base_image = self.original.copy()
+        
+        # Reset all committed edits
+        self.committed_global_edits = {
+            'exposure': 0,
+            'illumination': 0,
+            'contrast': 1.0,
+            'shadow': 0,
+            'highlights': 0,
+            'whites': 0,
+            'blacks': 0,
+            'saturation': 1.0,
+            'texture': 0,
+            'grain': 0,
+            'temperature': 0,
+            'curves_data': None
+        }
+        self.committed_mask_edits.clear()
+        
+        # Reset current parameters
+        self.exposure = 0
+        self.illumination = 0
+        self.contrast = 1.0
+        self.shadow = 0
+        self.highlights = 0
+        self.whites = 0
+        self.blacks = 0
+        self.saturation = 1.0
+        self.texture = 0
+        self.grain = 0
+        self.temperature = 0
+        self.curves_data = None
+        
+        # Reset mask editing
+        self.mask_editing_enabled = False
+        self.current_mask = None
+        self.current_mask_id = None
+        
+        # Clear cache
+        self.clear_optimization_cache()
         
     def commit_edits_to_base(self, curves_data=None):
         """
-        Commits current edits to the base image. This should be called
-        when switching between masks or from mask editing to global editing
-        to preserve the cumulative changes.
-        
-        Args:
-            curves_data: Optional curves data to apply before committing
+        Commits current global edits to the committed global edits.
+        This should be called when switching from global editing to mask editing.
         """
-        # Start with the current processed image
-        final_image = self.current.copy()
+        # Store current global parameters as committed
+        self.committed_global_edits.update({
+            'exposure': self.exposure,
+            'illumination': self.illumination,
+            'contrast': self.contrast,
+            'shadow': self.shadow,
+            'highlights': self.highlights,
+            'whites': self.whites,
+            'blacks': self.blacks,
+            'saturation': self.saturation,
+            'texture': self.texture,
+            'grain': self.grain,
+            'temperature': self.temperature,
+            'curves_data': curves_data if curves_data else self.curves_data
+        })
         
-        # Apply curves if provided (this ensures curves are included in the commit)
-        if curves_data:
-            if isinstance(curves_data, dict) and 'curves' in curves_data:
-                # New format with interpolation mode
-                curves = curves_data['curves']
-                interpolation_mode = curves_data.get('interpolation_mode', 'Linear')
-            else:
-                # Old format (backward compatibility)
-                curves = curves_data
-                interpolation_mode = 'Linear'
-            
-            final_image = self.apply_rgb_curves(final_image, curves, interpolation_mode)
-        
-        # Commit the final image (including curves) to base
-        self.base_image = final_image.copy()
-        
-        # Clear optimization cache when base image changes
+        # Clear optimization cache when edits change
         self.clear_optimization_cache()
     
-    def set_mask_editing(self, enabled, mask=None):
+    def commit_mask_edits(self):
+        """
+        Commits current mask edits to the committed mask edits.
+        """
+        if self.mask_editing_enabled and self.current_mask_id is not None:
+            self.committed_mask_edits[self.current_mask_id] = {
+                'mask': self.current_mask.copy() if self.current_mask is not None else None,
+                'exposure': self.exposure,
+                'illumination': self.illumination,
+                'contrast': self.contrast,
+                'shadow': self.shadow,
+                'highlights': self.highlights,
+                'whites': self.whites,
+                'blacks': self.blacks,
+                'saturation': self.saturation,
+                'texture': self.texture,
+                'grain': self.grain,
+                'temperature': self.temperature,
+                'curves_data': self.curves_data
+            }
+        
+        # Clear optimization cache when edits change
+        self.clear_optimization_cache()
+    
+    def load_global_parameters(self):
+        """
+        Loads committed global parameters into current parameters for global editing mode.
+        """
+        self.exposure = self.committed_global_edits['exposure']
+        self.illumination = self.committed_global_edits['illumination']
+        self.contrast = self.committed_global_edits['contrast']
+        self.shadow = self.committed_global_edits['shadow']
+        self.highlights = self.committed_global_edits['highlights']
+        self.whites = self.committed_global_edits['whites']
+        self.blacks = self.committed_global_edits['blacks']
+        self.saturation = self.committed_global_edits['saturation']
+        self.texture = self.committed_global_edits['texture']
+        self.grain = self.committed_global_edits['grain']
+        self.temperature = self.committed_global_edits['temperature']
+        self.curves_data = self.committed_global_edits['curves_data']
+        
+        # Clear optimization cache as parameters changed
+        self.clear_optimization_cache()
+    
+    def load_mask_parameters(self, mask_id):
+        """
+        Loads committed mask parameters for the specified mask.
+        Returns True if parameters were loaded, False if no committed edits exist.
+        """
+        if mask_id in self.committed_mask_edits:
+            edit_data = self.committed_mask_edits[mask_id]
+            
+            self.exposure = edit_data['exposure']
+            self.illumination = edit_data['illumination']
+            self.contrast = edit_data['contrast']
+            self.shadow = edit_data['shadow']
+            self.highlights = edit_data['highlights']
+            self.whites = edit_data['whites']
+            self.blacks = edit_data['blacks']
+            self.saturation = edit_data['saturation']
+            self.texture = edit_data['texture']
+            self.grain = edit_data['grain']
+            self.temperature = edit_data['temperature']
+            self.curves_data = edit_data['curves_data']
+            
+            # Clear optimization cache as parameters changed
+            self.clear_optimization_cache()
+            return True
+        else:
+            # Reset to defaults for new mask
+            self.reset_current_parameters()
+            return False
+    
+    def reset_current_parameters(self):
+        """
+        Resets current parameters to default values.
+        """
+        self.exposure = 0
+        self.illumination = 0
+        self.contrast = 1.0
+        self.shadow = 0
+        self.highlights = 0
+        self.whites = 0
+        self.blacks = 0
+        self.saturation = 1.0
+        self.texture = 0
+        self.grain = 0
+        self.temperature = 0
+        self.curves_data = None
+        
+        # Clear optimization cache as parameters changed
+        self.clear_optimization_cache()
+    
+    def set_mask_editing(self, enabled, mask=None, mask_id=None):
         """
         Enable or disable mask-based editing
         
         Args:
             enabled (bool): Whether to enable mask editing
             mask (numpy.ndarray): Binary mask array (boolean or 0-255) or None to disable
+            mask_id: Unique identifier for the mask (for tracking edits)
         """
         self.mask_editing_enabled = enabled
+        self.current_mask_id = mask_id
+        
         if enabled and mask is not None:
-            
             # Handle different mask formats
             if mask.dtype == bool:
                 # Boolean mask - convert to float32 0-1 range
@@ -102,228 +241,235 @@ class ImageProcessor:
                 else:
                     # Already 0-1 range
                     self.current_mask = mask.astype(np.float32)
-            
         else:
             self.current_mask = None
+            self.current_mask_id = None
             self.mask_editing_enabled = False
+    
+    def switch_to_global_editing(self):
+        """
+        Switches to global editing mode. Loads global parameters and ensures
+        proper state management.
+        """
+        # If we were in mask editing, commit any changes first
+        if self.mask_editing_enabled:
+            self.commit_mask_edits()
+        
+        self.mask_editing_enabled = False
+        self.current_mask = None
+        self.current_mask_id = None
+        
+        # Load global parameters into current parameters
+        self.load_global_parameters()
+        
+        # Clear optimization cache for fresh start
+        self.clear_optimization_cache()
+    
+    def switch_to_mask_editing(self, mask=None, mask_id=None):
+        """
+        Switches to mask editing mode. Commits any pending global changes
+        and sets up for mask editing.
+        
+        Args:
+            mask: Binary mask for editing
+            mask_id: Unique identifier for the mask
+        """
+        # If we were in global editing mode, commit current changes
+        if not self.mask_editing_enabled:
+            self.commit_edits_to_base()
+        
+        # Set up mask editing
+        self.set_mask_editing(True, mask, mask_id)
+        
+        # Try to load existing mask parameters, or reset to defaults
+        if not self.load_mask_parameters(mask_id):
+            self.reset_current_parameters()
+    
+    def finalize_mask_edits(self):
+        """
+        Finalizes mask edits by committing them to the edit history.
+        This should be called when switching between masks or back to global editing.
+        """
+        if self.mask_editing_enabled and self.current_mask_id is not None:
+            self.commit_mask_edits()
+            
+            # Reset current parameters since they're now committed
+            self.reset_current_parameters()
+            
+            # Clear optimization cache
+            self.clear_optimization_cache()
 
 
     def apply_all_edits(self):
         """
-        Applies all the editing functions in sequence to the base image.
-        If mask editing is enabled, applies edits only to masked areas.
-        For cumulative editing, this starts from base_image instead of original.
+        Applies all edits from scratch starting with the original image.
+        This ensures complete persistence of all edits across mode switches.
+        
+        The processing order is:
+        1. Start with original image
+        2. Apply committed global edits OR current global parameters (not both)
+        3. Apply all committed mask edits
+        4. Apply current mask parameters if in mask editing mode
         """
-        img = self.base_image.copy()
+        # Always start from the original image
+        img = self.original.copy()
         
-        # Optimization: Check if we can use incremental processing
-        if self.enable_optimization and not self.mask_editing_enabled:
-            return self._apply_edits_optimized()
-        
-        if self.mask_editing_enabled and self.current_mask is not None:
-            # Apply edits only to masked areas
-            mask = self.current_mask
-            
-            # Create a copy of the masked area for editing
-            masked_img = img.copy()
-            masked_img = self.apply_exposure(masked_img, self.exposure)
-            masked_img = self.apply_illumination(masked_img, self.illumination)
-            masked_img = self.apply_contrast(masked_img, self.contrast)
-            masked_img = self.apply_shadow(masked_img, self.shadow)
-            masked_img = self.apply_highlights(masked_img, self.highlights)
-            masked_img = self.apply_whites(masked_img, self.whites)
-            masked_img = self.apply_blacks(masked_img, self.blacks)
-            masked_img = self.apply_saturation(masked_img, self.saturation)
-            masked_img = self.apply_texture(masked_img, self.texture)
-            masked_img = self.apply_grain(masked_img, self.grain)
-            masked_img = self.apply_temperature(masked_img, self.temperature)
-            
-            # Apply RGB curves if available
-            if self.curves_data and 'curves' in self.curves_data:
-                curves = self.curves_data['curves']
-                interpolation_mode = self.curves_data.get('interpolation_mode', 'Linear')
-                masked_img = self.apply_rgb_curves(masked_img, curves, interpolation_mode)
-            
-            # Ensure all images have the same number of channels
-            if img.shape[2] != masked_img.shape[2]:
-                if img.shape[2] == 4 and masked_img.shape[2] == 3:
-                    # Add alpha channel to masked_img
-                    alpha_channel = np.ones((masked_img.shape[0], masked_img.shape[1], 1), dtype=masked_img.dtype) * 255
-                    masked_img = np.concatenate([masked_img, alpha_channel], axis=2)
-                elif img.shape[2] == 3 and masked_img.shape[2] == 4:
-                    # Remove alpha channel from masked_img
-                    masked_img = masked_img[:, :, :3]
-            
-            # Blend the edited masked area back into the original image
-            # Expand mask to match image channels
-            if img.shape[2] == 4:
-                mask_3d = np.stack([mask, mask, mask, mask], axis=2)
-            else:
-                mask_3d = np.stack([mask, mask, mask], axis=2)
-                
-            img = np.where(mask_3d, masked_img, img)
+        # Step 1: Apply global edits
+        if self.mask_editing_enabled:
+            # In mask editing mode: apply committed global edits as the base
+            img = self._apply_parameter_set(img, self.committed_global_edits)
         else:
-            # Apply edits to the entire image as before
-            img = self.apply_exposure(img, self.exposure)
-            img = self.apply_illumination(img, self.illumination)
-            img = self.apply_contrast(img, self.contrast)
-            img = self.apply_shadow(img, self.shadow)
-            img = self.apply_highlights(img, self.highlights)
-            img = self.apply_whites(img, self.whites)
-            img = self.apply_blacks(img, self.blacks)
-            img = self.apply_saturation(img, self.saturation)
-            img = self.apply_texture(img, self.texture)
-            img = self.apply_grain(img, self.grain)
-            img = self.apply_temperature(img, self.temperature)
-            
-            # Apply RGB curves if available
-            if self.curves_data and 'curves' in self.curves_data:
-                curves = self.curves_data['curves']
-                interpolation_mode = self.curves_data.get('interpolation_mode', 'Linear')
-                img = self.apply_rgb_curves(img, curves, interpolation_mode)
+            # In global editing mode: apply current global parameters
+            # (these may be the same as committed if just switched, or different if editing)
+            current_global_params = {
+                'exposure': self.exposure,
+                'illumination': self.illumination,
+                'contrast': self.contrast,
+                'shadow': self.shadow,
+                'highlights': self.highlights,
+                'whites': self.whites,
+                'blacks': self.blacks,
+                'saturation': self.saturation,
+                'texture': self.texture,
+                'grain': self.grain,
+                'temperature': self.temperature,
+                'curves_data': self.curves_data
+            }
+            img = self._apply_parameter_set(img, current_global_params)
+        
+        # Step 2: Apply committed mask edits, excluding the one currently being edited
+        for mask_id, edit_data in self.committed_mask_edits.items():
+            # Skip the current mask if we're editing it - its current parameters will be applied instead
+            if (edit_data['mask'] is not None and 
+                not (self.mask_editing_enabled and mask_id == self.current_mask_id)):
+                img = self._apply_mask_edit(img, edit_data)
+        
+        # Step 3: Apply current mask parameters if in mask editing mode
+        if self.mask_editing_enabled and self.current_mask is not None:
+            # Apply current mask edits (these replace any committed edits for this mask)
+            current_edit_data = {
+                'mask': self.current_mask,
+                'exposure': self.exposure,
+                'illumination': self.illumination,
+                'contrast': self.contrast,
+                'shadow': self.shadow,
+                'highlights': self.highlights,
+                'whites': self.whites,
+                'blacks': self.blacks,
+                'saturation': self.saturation,
+                'texture': self.texture,
+                'grain': self.grain,
+                'temperature': self.temperature,
+                'curves_data': self.curves_data
+            }
+            img = self._apply_mask_edit(img, current_edit_data)
         
         self.current = img
         return img
     
-    def _apply_edits_optimized(self):
+    def _apply_parameter_set(self, image, params):
         """
-        Optimized version that only recalculates changed parameters.
-        Processing order: exposure → illumination → contrast → shadow → highlights → 
-        whites → blacks → saturation → texture → grain → temperature → curves
+        Apply a set of parameters to an image.
+        
+        Args:
+            image: Input image
+            params: Dictionary of parameters to apply
+            
+        Returns:
+            Processed image
         """
-        current_params = {
-            'exposure': self.exposure, 'illumination': self.illumination, 
-            'contrast': self.contrast, 'shadow': self.shadow,
-            'highlights': self.highlights, 'whites': self.whites, 
-            'blacks': self.blacks, 'saturation': self.saturation,
-            'texture': self.texture, 'grain': self.grain, 
-            'temperature': self.temperature, 'curves_data': self.curves_data
+        img = image.copy()
+        
+        # Apply edits in processing order
+        img = self.apply_exposure(img, params.get('exposure', 0))
+        img = self.apply_illumination(img, params.get('illumination', 0))
+        img = self.apply_contrast(img, params.get('contrast', 1.0))
+        img = self.apply_shadow(img, params.get('shadow', 0))
+        img = self.apply_highlights(img, params.get('highlights', 0))
+        img = self.apply_whites(img, params.get('whites', 0))
+        img = self.apply_blacks(img, params.get('blacks', 0))
+        img = self.apply_saturation(img, params.get('saturation', 1.0))
+        img = self.apply_texture(img, params.get('texture', 0))
+        img = self.apply_grain(img, params.get('grain', 0))
+        img = self.apply_temperature(img, params.get('temperature', 0))
+        
+        # Apply curves if available
+        curves_data = params.get('curves_data')
+        if curves_data and 'curves' in curves_data:
+            curves = curves_data['curves']
+            interpolation_mode = curves_data.get('interpolation_mode', 'Linear')
+            img = self.apply_rgb_curves(img, curves, interpolation_mode)
+        
+        return img
+    
+    def _apply_mask_edit(self, image, edit_data):
+        """
+        Apply mask-specific edits to an image.
+        
+        Args:
+            image: Input image
+            edit_data: Dictionary containing mask and edit parameters
+            
+        Returns:
+            Processed image
+        """
+        mask = edit_data['mask']
+        if mask is None:
+            return image
+        
+        # Create a copy of the image for masked editing
+        img = image.copy()
+        
+        # Apply edits to a copy of the entire image
+        params = {
+            'exposure': edit_data.get('exposure', 0),
+            'illumination': edit_data.get('illumination', 0),
+            'contrast': edit_data.get('contrast', 1.0),
+            'shadow': edit_data.get('shadow', 0),
+            'highlights': edit_data.get('highlights', 0),
+            'whites': edit_data.get('whites', 0),
+            'blacks': edit_data.get('blacks', 0),
+            'saturation': edit_data.get('saturation', 1.0),
+            'texture': edit_data.get('texture', 0),
+            'grain': edit_data.get('grain', 0),
+            'temperature': edit_data.get('temperature', 0),
+            'curves_data': edit_data.get('curves_data')
         }
         
-        # Find the first parameter that changed
-        processing_order = ['exposure', 'illumination', 'contrast', 'shadow', 'highlights', 
-                          'whites', 'blacks', 'saturation', 'texture', 'grain', 'temperature', 'curves_data']
+        masked_img = self._apply_parameter_set(img, params)
         
-        start_from = None
-        for param in processing_order:
-            if param == 'curves_data':
-                # Special handling for curves_data - serialize for comparison
-                if self._curves_data_changed(current_params[param], self.last_parameters[param]):
-                    start_from = param
-                    break
-            else:
-                if current_params[param] != self.last_parameters[param]:
-                    start_from = param
-                    break
+        # Ensure all images have the same number of channels
+        if img.shape[2] != masked_img.shape[2]:
+            if img.shape[2] == 4 and masked_img.shape[2] == 3:
+                # Add alpha channel to masked_img
+                alpha_channel = np.ones((masked_img.shape[0], masked_img.shape[1], 1), dtype=masked_img.dtype) * 255
+                masked_img = np.concatenate([masked_img, alpha_channel], axis=2)
+            elif img.shape[2] == 3 and masked_img.shape[2] == 4:
+                # Remove alpha channel from masked_img
+                masked_img = masked_img[:, :, :3]
         
-        # If nothing changed, return cached result
-        if start_from is None:
-            return self.current
-        
-        # Find where to start processing from cache
-        start_index = processing_order.index(start_from)
-        
-        # Get cached state before the changed parameter
-        if start_index > 0:
-            cache_key = processing_order[start_index - 1]
-            if cache_key in self.cached_states:
-                img = self.cached_states[cache_key].copy()
-            else:
-                # Instead of full processing fallback, try to find the most recent cache
-                available_cache_keys = [k for k in processing_order[:start_index] if k in self.cached_states]
-                if available_cache_keys:
-                    # Use the most recent available cache
-                    best_cache_key = available_cache_keys[-1]
-                    best_cache_index = processing_order.index(best_cache_key)
-                    img = self.cached_states[best_cache_key].copy()
-                    # Update start_index to process from the available cache
-                    start_index = best_cache_index + 1
-                else:
-                    # No cache available, start from base
-                    img = self.base_image.copy()
-                    start_index = 0
+        # Blend the edited masked area back into the original image
+        # Expand mask to match image channels
+        if img.shape[2] == 4:
+            mask_3d = np.stack([mask, mask, mask, mask], axis=2)
         else:
-            img = self.base_image.copy()
-        
-        # Apply only the changed parameters and subsequent ones
-        for i in range(start_index, len(processing_order)):
-            param = processing_order[i]
+            mask_3d = np.stack([mask, mask, mask], axis=2)
             
-            if param == 'exposure':
-                img = self.apply_exposure(img, self.exposure)
-            elif param == 'illumination':
-                img = self.apply_illumination(img, self.illumination)
-            elif param == 'contrast':
-                img = self.apply_contrast(img, self.contrast)
-            elif param == 'shadow':
-                img = self.apply_shadow(img, self.shadow)
-            elif param == 'highlights':
-                img = self.apply_highlights(img, self.highlights)
-            elif param == 'whites':
-                img = self.apply_whites(img, self.whites)
-            elif param == 'blacks':
-                img = self.apply_blacks(img, self.blacks)
-            elif param == 'saturation':
-                img = self.apply_saturation(img, self.saturation)
-            elif param == 'texture':
-                img = self.apply_texture(img, self.texture)
-            elif param == 'grain':
-                img = self.apply_grain(img, self.grain)
-            elif param == 'temperature':
-                img = self.apply_temperature(img, self.temperature)
-            elif param == 'curves_data':
-                if self.curves_data and 'curves' in self.curves_data:
-                    curves = self.curves_data['curves']
-                    interpolation_mode = self.curves_data.get('interpolation_mode', 'Linear')
-                    img = self.apply_rgb_curves(img, curves, interpolation_mode)
-            
-            # Cache intermediate state
-            self.cached_states[param] = img.copy()
+        img = np.where(mask_3d, masked_img, img)
         
-        self.current = img
-        self._update_cache_and_params(current_params)
         return img
     
-    def _update_cache_and_params(self, current_params):
-        """Update the parameter tracking and limit cache size"""
-        # Create a deep copy for curves_data to avoid reference issues
-        params_copy = current_params.copy()
-        if params_copy['curves_data'] is not None:
-            import copy
-            params_copy['curves_data'] = copy.deepcopy(params_copy['curves_data'])
-        
-        self.last_parameters = params_copy
-        
-        # Increase cache size to accommodate all parameters in the processing chain
-        # We have 12 parameters total (exposure to curves_data), so cache should be at least 12
-        max_cache_size = 15  # Allow some extra space for safety
-        if len(self.cached_states) > max_cache_size:
-            # Remove oldest entries but be more conservative about eviction
-            # Only remove entries that are early in the processing chain
-            processing_order = ['exposure', 'illumination', 'contrast', 'shadow', 'highlights', 
-                              'whites', 'blacks', 'saturation', 'texture', 'grain', 'temperature', 'curves_data']
-            
-            # Sort keys by their order in processing chain, keeping later ones
-            sorted_keys = []
-            for param in processing_order:
-                if param in self.cached_states:
-                    sorted_keys.append(param)
-            
-            # Remove excess early entries first
-            excess_count = len(self.cached_states) - max_cache_size
-            if excess_count > 0:
-                keys_to_remove = sorted_keys[:excess_count]
-                for key in keys_to_remove:
-                    del self.cached_states[key]
+    def get_display_image(self):
+        """
+        Returns the current display image without modifying internal state.
+        This is the image that should be shown in the UI.
+        """
+        return self.apply_all_edits()
     
     def clear_optimization_cache(self):
-        """Clear the optimization cache - call when base image changes"""
+        """Clear the optimization cache."""
         self.cached_states.clear()
-        self.last_parameters = {
-            'exposure': 0, 'illumination': 0, 'contrast': 1.0, 'shadow': 0,
-            'highlights': 0, 'whites': 0, 'blacks': 0, 'saturation': 1.0,
-            'texture': 0, 'grain': 0, 'temperature': 0, 'curves_data': None
-        }
+        self.last_full_state_hash = None
     
     def apply_highlights(self, image, value):
         """
@@ -643,44 +789,18 @@ class ImageProcessor:
     def apply_rgb_curves(self, image, curves, interpolation_mode="Spline"):
         """
         Applies custom RGB curves to the image.
-        curves: a dict with keys 'r', 'g', 'b'. Each value is a list of control points [(x, y), ...]
+        curves: a dict with keys 'r', 'g', 'b', 'l'. Each value is a list of control points [(x, y), ...]
         where x and y are in [0,255]. If a channel is missing, that channel remains unchanged.
         interpolation_mode: "Linear" or "Spline"
         
-        If mask editing is enabled, applies curves only to masked areas.
+        This method now works directly with the provided image and doesn't handle masking internally.
+        Masking is handled at the apply_all_edits level.
         """
         if curves is None:
             return image
         
-        if self.mask_editing_enabled and self.current_mask is not None:
-            # Apply curves only to masked areas
-            result_image = image.copy()
-            
-            # Apply curves to the entire image first
-            curves_applied = self._apply_curves_with_luminance(image, curves, interpolation_mode)
-            
-            # Ensure all images have the same number of channels
-            if result_image.shape[2] != curves_applied.shape[2]:
-                if result_image.shape[2] == 4 and curves_applied.shape[2] == 3:
-                    # Add alpha channel to curves_applied
-                    alpha_channel = np.ones((curves_applied.shape[0], curves_applied.shape[1], 1), dtype=curves_applied.dtype) * 255
-                    curves_applied = np.concatenate([curves_applied, alpha_channel], axis=2)
-                elif result_image.shape[2] == 3 and curves_applied.shape[2] == 4:
-                    # Remove alpha channel from curves_applied
-                    curves_applied = curves_applied[:, :, :3]
-            
-            # Blend the curves result back into the original using the mask
-            if result_image.shape[2] == 4:
-                mask_3d = np.stack([self.current_mask, self.current_mask, self.current_mask, self.current_mask], axis=2)
-            else:
-                mask_3d = np.stack([self.current_mask, self.current_mask, self.current_mask], axis=2)
-                
-            result_image = np.where(mask_3d, curves_applied, result_image)
-            
-            return result_image
-        else:
-            # Apply curves to the entire image
-            return self._apply_curves_with_luminance(image, curves, interpolation_mode)
+        # Apply curves to the entire provided image
+        return self._apply_curves_with_luminance(image, curves, interpolation_mode)
     
     def generate_lut_from_points(self, points, interpolation_mode="Spline"):
         """Generate a lookup table from control points using specified interpolation"""
@@ -872,3 +992,54 @@ class ImageProcessor:
                 return True
         
         return False
+
+    def _params_equal(self, params1, params2):
+        """
+        Compare two parameter dictionaries for equality.
+        
+        Args:
+            params1: First parameter dictionary
+            params2: Second parameter dictionary
+            
+        Returns:
+            bool: True if parameters are equal, False otherwise
+        """
+        # List of parameter keys to compare (excluding 'mask')
+        param_keys = [
+            'exposure', 'illumination', 'contrast', 'shadow', 'highlights',
+            'whites', 'blacks', 'saturation', 'texture', 'grain', 'temperature'
+        ]
+        
+        # Compare each parameter
+        for key in param_keys:
+            if abs(params1.get(key, 0) - params2.get(key, 0)) > 1e-6:
+                return False
+        
+        # Compare curves data
+        curves1 = params1.get('curves_data')
+        curves2 = params2.get('curves_data')
+        
+        if curves1 is None and curves2 is None:
+            return True
+        elif curves1 is None or curves2 is None:
+            return False
+        else:
+            # Compare curve data structures
+            try:
+                import numpy as np
+                if isinstance(curves1, dict) and isinstance(curves2, dict):
+                    for channel in ['rgb', 'red', 'green', 'blue']:
+                        curve1 = curves1.get(channel)
+                        curve2 = curves2.get(channel)
+                        if curve1 is None and curve2 is None:
+                            continue
+                        elif curve1 is None or curve2 is None:
+                            return False
+                        elif not np.allclose(curve1, curve2, atol=1e-6):
+                            return False
+                    return True
+                else:
+                    return curves1 == curves2
+            except:
+                # Fallback to simple equality check
+                return curves1 == curves2

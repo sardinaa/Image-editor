@@ -107,6 +107,8 @@ class ProductionImageEditor:
             
             # Create processor and CropRotateUI
             processor = ImageProcessor(image.copy())
+            # Ensure we start in global editing mode
+            processor.switch_to_global_editing()
             crop_rotate_ui = CropRotateUI(image, processor)
             
             # Update CropRotateUI to use the production main window's axis tags
@@ -192,6 +194,17 @@ class ProductionImageEditor:
             if self.main_window:
                 self.main_window.cleanup()
             
+            # CRITICAL: Force cleanup of GPU-intensive services before general cleanup
+            if hasattr(self.app_service, '_generative_service') and self.app_service._generative_service:
+                print("Cleaning up generative service...")
+                self.app_service._generative_service.cleanup()
+            
+            if hasattr(self.app_service, '_segmentation_service') and self.app_service._segmentation_service:
+                print("Cleaning up segmentation service...")
+                if hasattr(self.app_service._segmentation_service, 'cleanup'):
+                    self.app_service._segmentation_service.cleanup()
+            
+            # General application cleanup
             self.app_service.cleanup()
             self.memory_manager.cleanup_gpu_memory()
             

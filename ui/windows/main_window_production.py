@@ -130,7 +130,7 @@ class ProductionMainWindow:
             if self.tool_panel and hasattr(self.tool_panel, 'masks_panel'):
                 self.tool_panel.masks_panel.update_masks([], [])
             
-            self.update_mask_overlays([])
+            self.update_mask_overlays([], auto_show_first=False)
 
     ##############################################
     # MAKE THIS IN THE SETUP
@@ -354,10 +354,10 @@ class ProductionMainWindow:
         if masks:
             self.mask_overlay_renderer.show_selected_masks(selected_indices, len(masks))
     
-    def update_mask_overlays(self, masks):
+    def update_mask_overlays(self, masks, auto_show_first=False):
         """Update the visual mask overlays on the image"""
         if self.mask_overlay_renderer:
-            self.mask_overlay_renderer.update_mask_overlays(masks, self.crop_rotate_ui)
+            self.mask_overlay_renderer.update_mask_overlays(masks, self.crop_rotate_ui, auto_show_first)
     
     def _create_image_series(self):
         """Create the image series to display the loaded image."""
@@ -608,8 +608,8 @@ class ProductionMainWindow:
                 if self.tool_panel and hasattr(self.tool_panel, 'update_masks'):
                     self.tool_panel.update_masks(masks)
                 
-                # Update overlays
-                self.update_mask_overlays(masks)
+                # Update overlays but don't auto-show the new brush mask
+                self.update_mask_overlays(masks, auto_show_first=False)
                 
                 # Clear the brush mask after adding
                 self.brush_renderer.clear_mask()

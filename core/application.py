@@ -34,8 +34,21 @@ class ApplicationService:
     def generative_service(self):
         """Lazy-load generative service for image synthesis."""
         if self._generative_service is None:
-            # Only use inpainting models
-            inpainting_model = "runwayml/stable-diffusion-inpainting"
+            # Use local inpainting model checkpoint
+            import os
+            from pathlib import Path
+            
+            # Get the absolute path to the local model
+            project_root = Path(__file__).parent.parent
+            local_model_path = project_root / "assets" / "models" / "512-inpainting-ema.ckpt"
+            
+            if local_model_path.exists():
+                inpainting_model = str(local_model_path)
+                print(f"Using local inpainting model: {inpainting_model}")
+            else:
+                # Fallback to HuggingFace model if local not found
+                inpainting_model = "runwayml/stable-diffusion-inpainting"
+                print(f"Local model not found, using HuggingFace model: {inpainting_model}")
             
             self._generative_service = GenerativeService(model_path=inpainting_model)
         return self._generative_service
@@ -113,7 +126,7 @@ class ApplicationService:
         """Rename a mask."""
         return self.mask_service.rename_mask(mask_index, new_name)
     
-    def reimagine_mask(self, mask_index: int, prompt: str, **generate_kwargs) -> Optional[np.ndarray]:
+    def reimagine_mask(self, mask_index: int, prompt: str, negative_prompt: str = "", **generate_kwargs) -> Optional[np.ndarray]:
         """Regenerate content within the specified mask using a generative model."""
         masks = self.mask_service.get_masks()
         if not (0 <= mask_index < len(masks)):
@@ -125,6 +138,10 @@ class ApplicationService:
         if original_mask is None:
             print("Error: No segmentation data in mask")
             return None
+
+        # CRITICAL: Free up GPU memory before inpainting
+        print("Preparing GPU memory for inpainting...")
+        self._prepare_gpu_memory_for_inpainting()
 
         # Get the base image for inpainting (before processing effects)
         base_image = self._get_base_image_for_inpainting()
@@ -155,7 +172,7 @@ class ApplicationService:
         print(f"Mask area: {np.sum(transformed_mask)} pixels ({np.sum(transformed_mask)/transformed_mask.size*100:.1f}%)")
         
         # Perform inpainting
-        result = self.generative_service.reimagine(base_image, transformed_mask, prompt, **generate_kwargs)
+        result = self.generative_service.reimagine(base_image, transformed_mask, prompt, negative_prompt=negative_prompt, **generate_kwargs)
         if result is None:
             print("Error: Generative service returned None")
             return None
@@ -190,7 +207,7 @@ class ApplicationService:
             blended[mask_bool] = result[mask_bool]
 
         # Save the inpainting result to PNG
-        self._save_inpainting_result(blended, result, mask_bool, prompt)
+        self._save_inpainting_result(blended, result, mask_bool, prompt, negative_prompt)
 
         # Update image processor to use the blended result
         self._update_image_processor_with_result(blended)
@@ -198,20 +215,20 @@ class ApplicationService:
         return blended
     
     def _get_base_image_for_inpainting(self) -> Optional[np.ndarray]:
-        """Get the appropriate base image for inpainting, avoiding processed effects that might interfere."""
-        # Priority 1: Use crop/rotate UI's original image if available (this has crop/rotate/flip applied)
+        """Get the appropriate base image for inpainting - should be the original unprocessed image."""
+        # Priority 1: Use the image processor's original image (unprocessed)
+        if (self.image_service.image_processor and 
+            hasattr(self.image_service.image_processor, 'original') and
+            self.image_service.image_processor.original is not None):
+            return self.image_service.image_processor.original.copy()
+        
+        # Priority 2: Use crop/rotate UI's original image if available (has crop/rotate/flip applied)
         if (self.image_service.crop_rotate_ui and 
             hasattr(self.image_service.crop_rotate_ui, 'original_image') and
             self.image_service.crop_rotate_ui.original_image is not None):
             return self.image_service.crop_rotate_ui.original_image.copy()
         
-        # Priority 2: Use the image processor's base image (has committed edits but not current slider values)
-        if (self.image_service.image_processor and 
-            hasattr(self.image_service.image_processor, 'base_image') and
-            self.image_service.image_processor.base_image is not None):
-            return self.image_service.image_processor.base_image.copy()
-        
-        # Priority 3: Use the raw current image
+        # Priority 3: Use the raw current image as fallback
         if self.image_service.current_image is not None:
             return self.image_service.current_image.copy()
         
@@ -228,9 +245,13 @@ class ApplicationService:
         try:
             if self.image_service.image_processor:
                 proc = self.image_service.image_processor
-                # Update base image to include the inpainting changes
-                proc.base_image = blended_image.copy()
-                proc.current = blended_image.copy()
+                # With the new architecture, we need to update the original image
+                # and clear any existing edits since the inpainting result becomes the new base
+                proc.original = blended_image.copy()
+                # Clear all edits since they've been baked into the new image
+                proc.committed_global_edits = proc._get_default_parameters()
+                proc.committed_mask_edits.clear()
+                proc.reset_current_parameters()
                 proc.clear_optimization_cache()
             
             # Update current image
@@ -244,7 +265,7 @@ class ApplicationService:
             print(f"Warning: Could not update image processor with result: {e}")
 
     def _save_inpainting_result(self, blended_image: np.ndarray, generated_content: np.ndarray, 
-                               mask: np.ndarray, prompt: str) -> None:
+                               mask: np.ndarray, prompt: str, negative_prompt: str = "") -> None:
         """Save inpainting results to PNG files."""
         import cv2
         import os
@@ -257,12 +278,21 @@ class ApplicationService:
         # Create timestamp for unique filenames
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Clean prompt for filename (remove special characters)
-        clean_prompt = "".join(c for c in prompt if c.isalnum() or c in (' ', '-', '_')).rstrip()
-        clean_prompt = clean_prompt.replace(' ', '_')[:50]  # Limit length and replace spaces
+        # Clean prompts for filename (remove special characters)
+        clean_positive = "".join(c for c in prompt if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        clean_positive = clean_positive.replace(' ', '_')[:30] if clean_positive else "no_prompt"
+        
+        clean_negative = "".join(c for c in negative_prompt if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        clean_negative = clean_negative.replace(' ', '_')[:20] if clean_negative else ""
+        
+        # Create filename with both prompts
+        if clean_negative:
+            filename_suffix = f"{clean_positive}_neg_{clean_negative}"
+        else:
+            filename_suffix = clean_positive
         
         # Save the full blended result
-        blended_filename = f"{output_dir}/inpainted_full_{timestamp}_{clean_prompt}.png"
+        blended_filename = f"{output_dir}/inpainted_full_{timestamp}_{filename_suffix}.png"
         
         # Convert from RGB/RGBA to BGR for OpenCV saving
         if blended_image.shape[2] == 4:  # RGBA
@@ -277,7 +307,7 @@ class ApplicationService:
         generated_only = np.zeros_like(blended_image)
         generated_only[mask] = generated_content[mask]
         
-        generated_filename = f"{output_dir}/inpainted_mask_only_{timestamp}_{clean_prompt}.png"
+        generated_filename = f"{output_dir}/inpainted_mask_only_{timestamp}_{filename_suffix}.png"
         
         if generated_only.shape[2] == 4:  # RGBA
             generated_bgr = cv2.cvtColor(generated_only, cv2.COLOR_RGBA2BGRA)
@@ -299,10 +329,9 @@ class ApplicationService:
             # Disable mask editing
             processor.set_mask_editing(False)
             
-            # Reset base image to original image (removes all committed mask edits)
-            if hasattr(processor, 'original') and processor.original is not None:
-                processor.base_image = processor.original.copy()
-                processor.current = processor.original.copy()
+            # Clear all committed mask edits (removes all mask edits from the processor)
+            if hasattr(processor, 'committed_mask_edits'):
+                processor.committed_mask_edits.clear()
                 processor.clear_optimization_cache()
     
     def get_mask_service(self) -> MaskService:
@@ -331,3 +360,46 @@ class ApplicationService:
             
         except Exception as e:
             print(f"Cleanup error: {e}")
+    
+    def _prepare_gpu_memory_for_inpainting(self):
+        """Prepare GPU memory for inpainting by freeing up resources from other models."""
+        try:
+            print("Freeing GPU memory before inpainting...")
+            
+            # 1. Clean up segmentation service if it exists and has resources
+            if self._segmentation_service is not None:
+                if hasattr(self._segmentation_service, 'segmenter') and self._segmentation_service.segmenter is not None:
+                    print("Moving segmentation model to CPU to free GPU memory...")
+                    self._segmentation_service.segmenter.cleanup_memory()
+            
+            # 2. Force garbage collection and CUDA cache cleanup
+            MemoryManager.clear_cuda_cache()
+            
+            # 3. Check available memory
+            memory_info = MemoryManager.get_device_info()
+            print(f"GPU memory after cleanup: {memory_info['free_mb']:.0f}MB free of {memory_info['total_mb']:.0f}MB total")
+            
+            # 4. If still low on memory, try more aggressive cleanup
+            if memory_info['free_mb'] < 2000:  # Less than 2GB free
+                print("Low GPU memory detected, performing aggressive cleanup...")
+                
+                # Clear any cached states in image processor
+                if (self.image_service and 
+                    self.image_service.image_processor and 
+                    hasattr(self.image_service.image_processor, 'clear_optimization_cache')):
+                    self.image_service.image_processor.clear_optimization_cache()
+                
+                # Additional cleanup
+                MemoryManager.clear_cuda_cache()
+                
+                # Re-check memory
+                memory_info = MemoryManager.get_device_info()
+                print(f"GPU memory after aggressive cleanup: {memory_info['free_mb']:.0f}MB free")
+                
+                if memory_info['free_mb'] < 1500:  # Still less than 1.5GB
+                    print("WARNING: GPU memory still low. Inpainting may fail or be very slow.")
+                    print("Consider closing other GPU-intensive applications or using a smaller model.")
+            
+        except Exception as e:
+            print(f"Error during GPU memory preparation: {e}")
+            # Continue anyway - this is best-effort cleanup

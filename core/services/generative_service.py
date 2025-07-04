@@ -221,6 +221,7 @@ class GenerativeService:
         image: np.ndarray,
         mask: np.ndarray,
         prompt: str,
+        negative_prompt: str = "",
         num_inference_steps: int = 30,
         guidance_scale: float = 7.5,
         strength: float = 0.95,
@@ -341,14 +342,15 @@ class GenerativeService:
                 print(f"Using prompt: '{prompt}'")
                 
                 print("Using dedicated inpainting pipeline")
-                # Enhanced prompt for inpainting
-                enhanced_prompt = f"high quality, detailed, {prompt}"
-                negative_prompt = "blurry, low quality, distorted, ugly, deformed, artifacts"
+                # Enhanced prompt for inpainting - only add enhancement if prompt is not empty
+                enhanced_prompt = f"high quality, detailed, {prompt}" if prompt.strip() else "high quality, detailed"
+                # Use user's negative prompt or default if empty
+                final_negative_prompt = negative_prompt.strip() if negative_prompt.strip() else "blurry, low quality, distorted, ugly, deformed, artifacts"
                 
                 # Use inpainting pipeline with enhanced settings
                 generation_kwargs = {
                     'prompt': enhanced_prompt,
-                    'negative_prompt': negative_prompt,
+                    'negative_prompt': final_negative_prompt,
                     'image': img_pil_resized,
                     'mask_image': mask_pil_resized,
                     'num_inference_steps': max(30, num_inference_steps),

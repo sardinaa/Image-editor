@@ -50,13 +50,14 @@ class MaskOverlayRenderer:
             [0, 128, 128, 100],   # Teal
         ]
     
-    def update_mask_overlays(self, masks: List[Dict[str, Any]], crop_rotate_ui) -> None:
+    def update_mask_overlays(self, masks: List[Dict[str, Any]], crop_rotate_ui, auto_show_first: bool = False) -> None:
         """
         Update the visual mask overlays on the image with performance optimizations.
         
         Args:
             masks: List of mask data dictionaries
             crop_rotate_ui: Reference to crop/rotate UI for dimensions and rotation
+            auto_show_first: Whether to automatically show the first mask when new masks are created
         """
         if not masks or not crop_rotate_ui:
             return
@@ -83,8 +84,8 @@ class MaskOverlayRenderer:
         else:
             successful_masks = self._create_mask_overlays(limited_masks, render_context)
         
-        # Hide unused overlays and show first mask if appropriate
-        self._finalize_overlay_display(successful_masks, len(limited_masks))
+        # Hide unused overlays and manage mask visibility based on auto_show_first setting
+        self._finalize_overlay_display(successful_masks, len(limited_masks), auto_show_first)
     
     def set_performance_settings(self, max_visible: int = 50, throttle_ms: int = 50, progressive: bool = True):
         """Configure performance settings for the overlay renderer."""
@@ -557,8 +558,8 @@ class MaskOverlayRenderer:
             # Return original mask if rotation fails
             return mask
     
-    def _finalize_overlay_display(self, successful_masks: int, total_masks: int) -> None:
-        """Hide unused overlays and show first mask if appropriate."""
+    def _finalize_overlay_display(self, successful_masks: int, total_masks: int, auto_show_first: bool = False) -> None:
+        """Hide unused overlays and conditionally show first mask."""
         # Hide any unused existing overlays (beyond current mask count)
         for idx in range(total_masks, self.max_total_overlays):  # Use configurable limit instead of hardcoded 100
             series_tag = f"mask_series_{idx}"
@@ -568,8 +569,8 @@ class MaskOverlayRenderer:
                 except Exception as e:
                     print(f"Error hiding overlay {idx}: {e}")
         
-        # Show first mask if any were created successfully and masks should be visible
-        if successful_masks > 0:
+        # Show first mask only if auto_show_first is True and conditions are met
+        if successful_masks > 0 and auto_show_first:
             try:
                 # Only show masks if conditions are met
                 masks_enabled = (dpg.does_item_exist("mask_section_toggle") and 
@@ -584,6 +585,13 @@ class MaskOverlayRenderer:
 
             except Exception as e:
                 print(f"Error showing selected mask: {e}")
+        elif successful_masks > 0:
+            # Hide all masks by default when new masks are created without auto_show_first
+            for idx in range(total_masks):
+                series_tag = f"mask_series_{idx}"
+                if dpg.does_item_exist(series_tag):
+                    dpg.configure_item(series_tag, show=False)
+                    self.visible_overlay_indices.discard(idx)
     
     def show_all_masks(self, total_masks: int) -> None:
         """
