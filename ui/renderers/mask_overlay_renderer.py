@@ -363,7 +363,9 @@ class MaskOverlayRenderer:
             'flip_horizontal': False,
             'flip_vertical': False,
             'offset_x': 0,
-            'offset_y': 0
+            'offset_y': 0,
+            'is_cropped': False,
+            'crop_rect': None
         }
         
         # Get current rotation angle if available
@@ -376,25 +378,112 @@ class MaskOverlayRenderer:
             context['flip_horizontal'] = flip_states.get('flip_horizontal', False)
             context['flip_vertical'] = flip_states.get('flip_vertical', False)
         
-        # Calculate offset based on rotation
-        if (context['current_angle'] != 0 and 
-            hasattr(crop_rotate_ui, 'rotated_image') and 
-            crop_rotate_ui.rotated_image is not None):
-            # Use rotated image dimensions and offset
-            if hasattr(crop_rotate_ui, 'rot_h') and hasattr(crop_rotate_ui, 'rot_w'):
-                context['offset_x'] = (context['texture_w'] - crop_rotate_ui.rot_w) // 2
-                context['offset_y'] = (context['texture_h'] - crop_rotate_ui.rot_h) // 2
+        # Also try to get flip states directly from attributes if method doesn't exist
+        if hasattr(crop_rotate_ui, 'flip_horizontal'):
+            context['flip_horizontal'] = crop_rotate_ui.flip_horizontal
+        if hasattr(crop_rotate_ui, 'flip_vertical'):
+            context['flip_vertical'] = crop_rotate_ui.flip_vertical
+        
+        print(f"DEBUG: Mask overlay flip states - H: {context['flip_horizontal']}, V: {context['flip_vertical']}")
+        
+        # Check if we're in crop mode or result mode
+        crop_mode = False
+        if dpg.does_item_exist("crop_mode"):
+            crop_mode = dpg.get_value("crop_mode")
+        
+        # Determine the correct offset and dimensions based on the current state
+        if crop_mode and context['current_angle'] != 0:
+            # Crop mode with rotation: use rotated image dimensions and offsets
+            if (hasattr(crop_rotate_ui, 'rot_w') and hasattr(crop_rotate_ui, 'rot_h') and
+                hasattr(crop_rotate_ui, 'offset_x') and hasattr(crop_rotate_ui, 'offset_y')):
+                context['offset_x'] = crop_rotate_ui.offset_x
+                context['offset_y'] = crop_rotate_ui.offset_y
                 context['rot_w'] = crop_rotate_ui.rot_w
                 context['rot_h'] = crop_rotate_ui.rot_h
+                print(f"DEBUG: Mask overlay using crop mode rotated offsets: ({context['offset_x']}, {context['offset_y']})")
             else:
-                # Fallback to original calculation
+                # Fallback calculation
+                context['offset_x'] = (context['texture_w'] - context['orig_w']) // 2
+                context['offset_y'] = (context['texture_h'] - context['orig_h']) // 2
+        elif not crop_mode and context['current_angle'] != 0:
+            # Result mode with rotation: use rotated dimensions but check for crop
+            if (hasattr(crop_rotate_ui, 'rot_w') and hasattr(crop_rotate_ui, 'rot_h') and
+                hasattr(crop_rotate_ui, 'offset_x') and hasattr(crop_rotate_ui, 'offset_y')):
+                # Check if there's a crop rectangle applied - if so, the displayed image is different
+                if hasattr(crop_rotate_ui, 'user_rect') and crop_rotate_ui.user_rect:
+                    context['is_cropped'] = True
+                    context['crop_rect'] = crop_rotate_ui.user_rect
+                    
+                    # Calculate the actual cropped image dimensions that are displayed
+                    crop_rect = crop_rotate_ui.user_rect
+                    rx = int(crop_rect["x"] - crop_rotate_ui.offset_x)
+                    ry = int(crop_rect["y"] - crop_rotate_ui.offset_y)
+                    rw = int(crop_rect["w"])
+                    rh = int(crop_rect["h"])
+                    
+                    # Clamp to rotated image bounds
+                    rx = max(0, rx)
+                    ry = max(0, ry)
+                    rx_end = min(rx + rw, crop_rotate_ui.rot_w)
+                    ry_end = min(ry + rh, crop_rotate_ui.rot_h)
+                    actual_rw = rx_end - rx
+                    actual_rh = ry_end - ry
+                    
+                    # The cropped image is displayed centered in the texture
+                    context['display_offset_x'] = (context['texture_w'] - actual_rw) // 2
+                    context['display_offset_y'] = (context['texture_h'] - actual_rh) // 2
+                    context['cropped_display_w'] = actual_rw
+                    context['cropped_display_h'] = actual_rh
+                    
+                    # Also store the crop region within the rotated image for proper mask transformation
+                    context['crop_region_x'] = rx
+                    context['crop_region_y'] = ry
+                    context['crop_region_w'] = actual_rw
+                    context['crop_region_h'] = actual_rh
+                    
+                    print(f"DEBUG: Mask overlay result mode crop - crop_region: ({rx},{ry},{actual_rw},{actual_rh}), display_offset: ({context['display_offset_x']}, {context['display_offset_y']})")
+                else:
+                    # No crop, just rotated image
+                    context['offset_x'] = crop_rotate_ui.offset_x
+                    context['offset_y'] = crop_rotate_ui.offset_y
+                    context['rot_w'] = crop_rotate_ui.rot_w
+                    context['rot_h'] = crop_rotate_ui.rot_h
+                    print(f"DEBUG: Mask overlay using result mode rotated offsets: ({context['offset_x']}, {context['offset_y']})")
+            else:
                 context['offset_x'] = (context['texture_w'] - context['orig_w']) // 2
                 context['offset_y'] = (context['texture_h'] - context['orig_h']) // 2
         else:
-            # No rotation, use original calculation
+            # No rotation case
             context['offset_x'] = (context['texture_w'] - context['orig_w']) // 2
             context['offset_y'] = (context['texture_h'] - context['orig_h']) // 2
+            
+            # Check for crop even without rotation
+            if hasattr(crop_rotate_ui, 'user_rect') and crop_rotate_ui.user_rect:
+                context['is_cropped'] = True
+                context['crop_rect'] = crop_rotate_ui.user_rect
+                # For no rotation case, calculate simple crop display
+                crop_rect = crop_rotate_ui.user_rect
+                orig_h, orig_w = context['orig_h'], context['orig_w']
+                
+                # Calculate crop region relative to original image
+                rx = max(0, min(orig_w, int(crop_rect["x"] - context['offset_x'])))
+                ry = max(0, min(orig_h, int(crop_rect["y"] - context['offset_y'])))
+                rw = min(int(crop_rect["w"]), orig_w - rx)
+                rh = min(int(crop_rect["h"]), orig_h - ry)
+                
+                # Display position for cropped result
+                context['display_offset_x'] = (context['texture_w'] - rw) // 2
+                context['display_offset_y'] = (context['texture_h'] - rh) // 2
+                context['cropped_display_w'] = rw
+                context['cropped_display_h'] = rh
+                context['crop_region_x'] = rx
+                context['crop_region_y'] = ry
+                context['crop_region_w'] = rw
+                context['crop_region_h'] = rh
+                
+                print(f"DEBUG: Mask overlay detected crop rectangle (no rotation): crop_region: ({rx},{ry},{rw},{rh}), display: ({context['display_offset_x']},{context['display_offset_y']})")
         
+        print(f"DEBUG: Mask overlay context - crop_mode: {crop_mode}, angle: {context['current_angle']}, offset: ({context.get('offset_x', 0)}, {context.get('offset_y', 0)}), cropped: {context.get('is_cropped', False)}")
         return context
     
     def _cleanup_old_overlays(self) -> None:
@@ -467,12 +556,72 @@ class MaskOverlayRenderer:
             overlay = np.zeros((context['texture_h'], context['texture_w'], 4), dtype=np.uint8)
             color = self.colors[mask_idx % len(self.colors)]
             
-            # Apply mask with color based on transformation state
-            if (context.get('current_angle', 0) != 0 and 
-                'rot_h' in context and 'rot_w' in context):
-                # Use rotated image dimensions
+            # Handle different display scenarios
+            if context.get('is_cropped', False) and 'display_offset_x' in context:
+                # Image is cropped and displayed with specific offsets
+                # The mask needs to be cropped to match the displayed region and positioned accordingly
+                
+                if 'crop_region_x' in context:
+                    # Extract the part of the mask that corresponds to the crop region
+                    crop_x = context['crop_region_x']
+                    crop_y = context['crop_region_y']
+                    crop_w = context['crop_region_w']
+                    crop_h = context['crop_region_h']
+                    
+                    # Crop the mask to match the displayed image region
+                    mask_h, mask_w = binary_mask.shape[:2]
+                    
+                    # Ensure crop region is within mask bounds
+                    crop_x = max(0, min(crop_x, mask_w))
+                    crop_y = max(0, min(crop_y, mask_h))
+                    crop_end_x = min(crop_x + crop_w, mask_w)
+                    crop_end_y = min(crop_y + crop_h, mask_h)
+                    
+                    if crop_end_x > crop_x and crop_end_y > crop_y:
+                        # Extract the cropped portion of the mask
+                        cropped_mask = binary_mask[crop_y:crop_end_y, crop_x:crop_end_x]
+                        
+                        # Position this cropped mask at the display offset
+                        display_x = context['display_offset_x']
+                        display_y = context['display_offset_y']
+                        
+                        cropped_h, cropped_w = cropped_mask.shape[:2]
+                        end_y = min(display_y + cropped_h, context['texture_h'])
+                        end_x = min(display_x + cropped_w, context['texture_w'])
+                        
+                        for channel in range(4):
+                            overlay[
+                                display_y:end_y,
+                                display_x:end_x,
+                                channel
+                            ] = np.where(cropped_mask[:end_y-display_y, :end_x-display_x] == 1, color[channel], 0)
+                        
+                        print(f"DEBUG: Mask overlay cropped display - crop_region: ({crop_x},{crop_y},{crop_end_x-crop_x},{crop_end_y-crop_y}), display: ({display_x},{display_y}), cropped_mask_size: {cropped_w}x{cropped_h}")
+                else:
+                    # Fallback: simple centering
+                    mask_h, mask_w = binary_mask.shape[:2]
+                    display_offset_x = (context['texture_w'] - mask_w) // 2
+                    display_offset_y = (context['texture_h'] - mask_h) // 2
+                    
+                    end_y = min(display_offset_y + mask_h, context['texture_h'])
+                    end_x = min(display_offset_x + mask_w, context['texture_w'])
+                    
+                    for channel in range(4):
+                        overlay[
+                            display_offset_y:end_y,
+                            display_offset_x:end_x,
+                            channel
+                        ] = np.where(binary_mask[:end_y-display_offset_y, :end_x-display_offset_x] == 1, color[channel], 0)
+                        
+                    print(f"DEBUG: Mask overlay fallback centering - mask_size: {mask_w}x{mask_h}, display_offset: ({display_offset_x}, {display_offset_y})")
+                    
+            elif (context.get('current_angle', 0) != 0 and 
+                  'rot_h' in context and 'rot_w' in context):
+                # Use rotated image dimensions and offsets
                 mask_h = min(binary_mask.shape[0], context['rot_h'])
                 mask_w = min(binary_mask.shape[1], context['rot_w'])
+                
+                print(f"DEBUG: Mask overlay for rotated image - rot_size: {context['rot_w']}x{context['rot_h']}, mask_size: {mask_w}x{mask_h}, offset: ({context['offset_x']}, {context['offset_y']})")
                 
                 # Apply transformed mask with color
                 for channel in range(4):
@@ -482,39 +631,67 @@ class MaskOverlayRenderer:
                         channel
                     ] = np.where(binary_mask[:mask_h, :mask_w] == 1, color[channel], 0)
             else:
-                # Apply original mask with color (no rotation)
+                # Handle original image case (including flips without rotation)
                 mask_h = min(binary_mask.shape[0], context['orig_h'])
                 mask_w = min(binary_mask.shape[1], context['orig_w'])
                 
+                # Check if image has flips applied
+                flip_h = context.get('flip_horizontal', False)
+                flip_v = context.get('flip_vertical', False)
+                
+                # Apply any transformations (rotation and/or flips) to the mask
+                transformed_mask = binary_mask
+                if context.get('current_angle', 0) != 0 or flip_h or flip_v:
+                    transformed_mask = self._transform_mask(
+                        binary_mask,
+                        context.get('current_angle', 0),
+                        flip_h,
+                        flip_v,
+                        context['orig_w'],
+                        context['orig_h']
+                    )
+                
+                # Update mask dimensions after transformation
+                mask_h = min(transformed_mask.shape[0], context['texture_h'] - context['offset_y'])
+                mask_w = min(transformed_mask.shape[1], context['texture_w'] - context['offset_x'])
+                
+                if flip_h or flip_v:
+                    print(f"DEBUG: Mask overlay for flipped image - flips: H{flip_h}/V{flip_v}, orig_size: {context['orig_w']}x{context['orig_h']}, transformed_mask_size: {mask_w}x{mask_h}, offset: ({context['offset_x']}, {context['offset_y']})")
+                else:
+                    print(f"DEBUG: Mask overlay for original image - orig_size: {context['orig_w']}x{context['orig_h']}, mask_size: {mask_w}x{mask_h}, offset: ({context['offset_x']}, {context['offset_y']})")
+                
+                # Apply the transformed mask at the offset position
                 for channel in range(4):
                     overlay[
                         context['offset_y']:context['offset_y'] + mask_h, 
                         context['offset_x']:context['offset_x'] + mask_w, 
                         channel
-                    ] = np.where(binary_mask[:mask_h, :mask_w] == 1, color[channel], 0)
+                    ] = np.where(transformed_mask[:mask_h, :mask_w] == 1, color[channel], 0)
             
             return overlay
             
         except Exception as e:
             print(f"Error creating overlay texture for mask {mask_idx}: {e}")
+            traceback.print_exc()
             return None
     
     def _transform_mask(self, mask: np.ndarray, angle: float, flip_horizontal: bool, flip_vertical: bool, orig_w: int, orig_h: int) -> np.ndarray:
-        """Apply rotation and flip transformations to a mask."""       
+        """Apply rotation and flip transformations to a mask to match image transformation order."""       
         try:
             transformed_mask = mask.copy()
             
-            # Apply flips first (before rotation)
+            # Apply rotation first (same order as in CropRotateUI)
+            if angle != 0:
+                transformed_mask = self._rotate_mask(transformed_mask, angle, orig_w, orig_h)
+            
+            # Apply flips to the (possibly rotated) mask (same order as in CropRotateUI)
             if flip_horizontal:
                 transformed_mask = np.fliplr(transformed_mask)
             
             if flip_vertical:
                 transformed_mask = np.flipud(transformed_mask)
             
-            # Apply rotation if needed
-            if angle != 0:
-                transformed_mask = self._rotate_mask(transformed_mask, angle, orig_w, orig_h)
-            
+            print(f"DEBUG: Mask transformation applied - angle: {angle}, flip_h: {flip_horizontal}, flip_v: {flip_vertical}, input_shape: {mask.shape}, output_shape: {transformed_mask.shape}")
             return transformed_mask
             
         except Exception as e:

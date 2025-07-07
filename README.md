@@ -170,64 +170,9 @@ Edit `utils/performance_config.py` to adjust:
 - Memory usage thresholds
 - Rendering quality settings
 
-## Troubleshooting
-
-### Common Issues
-
-**"CUDA out of memory"**
-- Reduce image size or disable GPU acceleration
-- Close other GPU-intensive applications
-- Use CPU fallback mode
-
-**"Model not found"**
-- Ensure AI models are in `assets/models/` directory
-- Check file permissions and paths
-- Download models from official sources
-
-**"Slow performance"**
-- Enable GPU acceleration if available
-- Reduce number of visible mask overlays
-- Close unnecessary applications
-
-### Error Handling
-
-The application includes comprehensive error handling:
-- Automatic fallback to CPU for GPU errors
-- Graceful degradation when AI models are missing
-- Memory cleanup on application exit
-- Detailed error logging for debugging
-
 ## 🤝 Contributing
 
-Contributions are welcome. Please read the guidelines below before submitting changes.
-
-### Development Setup
-
-1. Fork and clone the repository
-2. Install dependencies as described in the installation section
-3. Create a feature branch: `git checkout -b feature-name`
-
-### Guidelines
-
-- Follow PEP 8 style conventions
-- Add type hints where appropriate
-- Test changes with different image formats and sizes
-- Ensure AI features work with both GPU and CPU
-- Update documentation for user-facing changes
-
-### Contribution Types
-
-- **Bug Reports**: Include reproduction steps and system info
-- **Features**: Discuss large changes in an issue first
-- **Documentation**: Improve existing docs or add examples
-- **Performance**: Profile and optimize bottlenecks
-
-### Testing
-
-- Test with various image formats and sizes
-- Verify GPU/CPU fallback behavior
-- Check memory usage with large images
-- Ensure UI responsiveness during processing
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on how to contribute to this project.
 
 ## License
 
