@@ -53,6 +53,7 @@ Feel free to open an issue if you have questions about contributing or need help
 - [ ] Start image at position (0,0) instead of centered
 
 ### Feature Additions
+- [ ] Performance configuration dialog 
 - [ ] Invert mask functionality
 - [ ] Before and after transform view
 - [ ] Perspective editing tools
