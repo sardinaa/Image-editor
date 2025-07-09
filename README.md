@@ -8,7 +8,7 @@ A desktop image editing application built with Python and DearPyGUI that combine
 
 Standard image editing controls with real-time preview and histogram display.
 
-![Core Editing Demo](docs/gifs/core-editing-demo.gif)
+![Core Editing Demo](docs/gifs/color.gif)
 
 - **Exposure Controls**: Adjust exposure, highlights, shadows, whites, and blacks values
 - **Color Adjustments**: Modify saturation and temperature settings for color balance
@@ -20,7 +20,7 @@ Standard image editing controls with real-time preview and histogram display.
 
 Basic geometric transformation operations.
 
-![Transform Tools Demo](docs/gifs/transform-tools-demo.gif)
+![Transform Tools Demo](docs/gifs/crop_and_rotate.gif)
 
 - **Crop & Rotate**: Interactive cropping with rotation controls
 - **Flip Operations**: Horizontal and vertical image flipping
@@ -30,7 +30,7 @@ Basic geometric transformation operations.
 
 Integration with machine learning models for automated image processing.
 
-![AI Features Demo](docs/gifs/ai-features-demo.gif)
+![AI Features Demo](docs/gifs/ai_features.gif)
 
 - **Auto-Segmentation**: Uses Meta's Segment Anything Model (SAM) for object detection
 - **Mask Generation**: Automatic creation of selection masks from detected objects
@@ -41,8 +41,6 @@ Integration with machine learning models for automated image processing.
 
 Tools for creating and managing image selections.
 
-![Advanced Masking Demo](docs/gifs/advanced-masking-demo.gif)
-
 - **Multiple Masks**: Support for multiple simultaneous selection masks
 - **Selective Editing**: Apply different adjustments to individual masked regions
 - **Mask Visualization**: Overlay display with configurable colors and opacity
@@ -51,8 +49,6 @@ Tools for creating and managing image selections.
 ### Interface
 
 User interface built with DearPyGUI framework.
-
-![User Interface Demo](docs/gifs/user-interface-demo.gif)
 
 - **Modular Panels**: Component-based UI with organized tool sections
 - **Real-time Updates**: Immediate visual feedback for parameter changes
@@ -187,21 +183,3 @@ This license allows commercial and private use, modification, and distribution o
 - Hugging Face for Diffusers library
 - OpenCV community for computer vision tools
 - DearPyGUI team for the GUI framework
-
-## 📝 TODO
-
-### Bug Fixes
-- [x] Reopen Image (texture is not updated properly)
-- [ ] Fix pan interaction breaking after extended use
-- [ ] Start image at position (0,0) instead of centered
-
-### Feature Additions
-- [ ] Invert mask functionality
-- [ ] Before and after transform view
-- [ ] Perspective editing tools
-- [ ] Batch processing support
-- [ ] HDR image format support
-
----
-
-This is an open-source image editor that combines traditional editing tools with AI capabilities. The AI features require additional model downloads but are optional for basic functionality.

@@ -44,3 +44,22 @@ Please be respectful and constructive in all interactions. We're building this t
 ## Questions?
 
 Feel free to open an issue if you have questions about contributing or need help getting started.
+
+## 📝 TODO
+
+### Bug Fixes
+- [x] Reopen Image (texture is not updated properly)
+- [ ] Fix pan interaction breaking after extended use
+- [ ] Start image at position (0,0) instead of centered
+
+### Feature Additions
+- [ ] Invert mask functionality
+- [ ] Before and after transform view
+- [ ] Perspective editing tools
+- [ ] Batch processing support
+- [ ] HDR image format support
+
+---
+
+This is an open-source image editor that combines traditional editing tools with AI capabilities. The AI features require additional model downloads but are optional for basic functionality.
+
