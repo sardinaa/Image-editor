@@ -67,7 +67,7 @@ User interface built with DearPyGUI framework.
 
 1. **Clone the repository**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/sardinaa/Image-editor
    cd image-editor
    ```
 
