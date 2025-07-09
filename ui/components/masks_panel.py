@@ -6,8 +6,14 @@ import dearpygui.dearpygui as dpg
 from typing import Dict, Any, Set, List, Optional
 from ui.components.base_panel import BasePanel
 from utils.ui_helpers import UIStateManager, ControlGroupManager, MaskOverlayManager
+from utils.performance_config import PerformanceConfig
+from utils.mask_cache import PerformanceMaskManager
 import traceback
-
+import numpy as np
+import cv2
+import asyncio
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 class MasksPanel(BasePanel):
     """Panel for mask management controls."""
@@ -37,18 +43,38 @@ class MasksPanel(BasePanel):
         # Control group manager for mask-related controls
         self.control_groups = ControlGroupManager()
         self._setup_control_groups()
+        
+        # Performance optimization with adaptive settings
+        self.performance_manager = PerformanceMaskManager()
+        perf_config = PerformanceConfig.get_optimized_settings()
+        
+        self.MAX_MASKS_LIMIT = perf_config['max_masks']
+        self.UI_UPDATE_THROTTLE_MS = perf_config['ui_throttle']
+        self.BATCH_SIZE = perf_config['batch_size']
+        self.OVERLAY_UPDATE_DELAY = perf_config['overlay_delay']
+        
+        # Performance state tracking
+        self.last_ui_update = 0
+        self.pending_ui_update = False
+        self.mask_processing_active = False
+        self.current_batch = 0
+        
+        # Async processing with limited workers for better resource management
+        self.executor = ThreadPoolExecutor(max_workers=1)  # Reduced from 2
+        self.segmentation_task = None
     
     def _setup_control_groups(self):
         """Set up control groups for managing UI state."""
         # Mask controls that support enabled property
         mask_controls = [
             "auto_segment_btn", "clear_all_masks_btn", "segmentation_mode",
-            "show_mask_overlay", "delete_mask_btn", "rename_mask_btn", "group_ungroup_btn"
+            "show_mask_overlay", "show_all_masks", "delete_mask_btn", "rename_mask_btn", 
+            "group_ungroup_btn", "reimagine_positive_prompt", "reimagine_negative_prompt", "reimagine_btn", "brush_mode"
         ]
         self.control_groups.register_group("mask_controls", mask_controls)
         
         # Container controls that only support show/hide
-        container_controls = ["segmentation_controls", "mask_table"]
+        container_controls = ["segmentation_controls", "mask_table", "brush_controls_panel", "inpainting_panel"]
         self.control_groups.register_group("mask_containers", container_controls)
     
     def setup(self) -> None:
@@ -56,7 +82,14 @@ class MasksPanel(BasePanel):
         self.parameters = {
             'mask_section_toggle': False,
             'segmentation_mode': False,
-            'show_mask_overlay': True
+            'show_mask_overlay': True,
+            'show_all_masks': False,
+            'brush_mode': False,
+            'brush_size': 20,
+            'brush_opacity': 1.0,
+            'brush_hardness': 0.8,
+            'eraser_mode': False,
+            'inpainting_toggle': False
         }
 
     def draw(self) -> None:
@@ -78,14 +111,16 @@ class MasksPanel(BasePanel):
         # Mask panel content
         with dpg.child_window(
             tag="mask_panel",
-            height=240,
+            height=420,
             autosize_x=True,
             show=False,
             border=False
         ):
+            self._draw_brush_controls()
             self._draw_segmentation_controls()
             self._draw_mask_management_controls()
             self._draw_mask_table()
+            self._draw_inpainting_controls()
         
         # Initialize disabled state if masks start disabled by default
         if hasattr(self, '_initial_masks_disabled') and self._initial_masks_disabled:
@@ -102,6 +137,14 @@ class MasksPanel(BasePanel):
         # Always ensure segmentation controls are hidden on initialization regardless of masks state
         # This prevents the confirm/cancel buttons from being visible at startup
         UIStateManager.safe_configure_item("segmentation_controls", show=False)
+        
+        # Always ensure brush controls are hidden on initialization
+        UIStateManager.safe_configure_item("brush_controls_panel", show=False)
+        UIStateManager.safe_set_value("brush_mode", False)
+        
+        # Always ensure inpainting panel is hidden on initialization
+        UIStateManager.safe_configure_item("inpainting_panel", show=False)
+        UIStateManager.safe_set_value("inpainting_toggle", False)
     
     def _draw_segmentation_controls(self):
         """Draw segmentation control section."""
@@ -112,15 +155,27 @@ class MasksPanel(BasePanel):
             self._create_button(
                 label="Auto Segment",
                 callback=self._auto_segment,
-                width=85,
+                width=90,
                 height=20
             )
             
             self._create_button(
                 label="Clear Masks",
                 callback=self._clear_all_masks,
-                width=85,
+                width=90,
                 height=20
+            )
+        
+        # Add mask limit controls
+        with dpg.group(horizontal=True):
+            dpg.add_text("Max Masks:", color=[200, 200, 200])
+            dpg.add_input_int(
+                tag="max_masks_input",
+                default_value=self.MAX_MASKS_LIMIT,
+                min_value=1,
+                max_value=200,
+                width=80,
+                callback=self._on_max_masks_changed
             )
         
         # Add tags to buttons for control management
@@ -161,11 +216,194 @@ class MasksPanel(BasePanel):
                 dpg.add_text("Processing...", color=[200, 200, 200], tag="segmentation_loading_text")
             dpg.add_spacer(height=3)
     
+    def _draw_brush_controls(self):
+        """Draw brush tool controls for manual mask creation."""
+        # Brush tool toggle
+        self._create_checkbox(
+            label="Brush Tool",
+            tag="brush_mode",
+            default=False
+        )
+        
+        if UIStateManager.safe_item_exists("brush_mode"):
+            dpg.set_item_callback("brush_mode", self._toggle_brush_mode)
+        
+        # Brush controls panel (initially hidden)
+        with dpg.child_window(
+            tag="brush_controls_panel",
+            height=140,
+            autosize_x=True,
+            show=False,
+            border=False
+        ):
+            # Brush size control
+            self._create_slider_int(
+                label="Brush Size",
+                tag="brush_size",
+                default=20,
+                min_val=1,
+                max_val=100
+            )
+            
+            if UIStateManager.safe_item_exists("brush_size"):
+                dpg.set_item_callback("brush_size", self._on_brush_parameter_change)
+            
+            # Brush opacity control
+            self._create_slider_float(
+                label="Opacity",
+                tag="brush_opacity",
+                default=1.0,
+                min_val=0.1,
+                max_val=1.0
+            )
+            
+            if UIStateManager.safe_item_exists("brush_opacity"):
+                dpg.set_item_callback("brush_opacity", self._on_brush_parameter_change)
+            
+            # Brush hardness control
+            self._create_slider_float(
+                label="Hardness",
+                tag="brush_hardness",
+                default=0.8,
+                min_val=0.0,
+                max_val=1.0
+            )
+            
+            if UIStateManager.safe_item_exists("brush_hardness"):
+                dpg.set_item_callback("brush_hardness", self._on_brush_parameter_change)
+            
+            dpg.add_spacer(height=5)
+            
+            # Eraser mode toggle
+            self._create_checkbox(
+                label="Eraser Mode",
+                tag="eraser_mode",
+                default=False
+            )
+            
+            if UIStateManager.safe_item_exists("eraser_mode"):
+                dpg.set_item_callback("eraser_mode", self._on_brush_parameter_change)
+            
+            dpg.add_spacer(height=5)
+            
+            # Control buttons
+            with dpg.group(horizontal=True):
+                self._create_button(
+                    label="Clear Brush",
+                    callback=self._clear_brush_mask,
+                    width=82,
+                    height=20,
+                    tag="clear_brush_creation_btn"
+                )
+                
+                self._create_button(
+                    label="Add to Masks",
+                    callback=self._add_brush_mask_to_collection,
+                    width=82,
+                    height=20,
+                    tag="add_brush_btn"
+                )
+                
+            # Additional buttons for mask editing mode (initially hidden)
+            with dpg.group(horizontal=True, tag="brush_mask_edit_controls", show=False):
+                self._create_button(
+                    label="Clear Brush",
+                    callback=self._clear_brush_mask,
+                    width=82,
+                    height=20,
+                    tag="clear_brush_btn"
+                )
+                
+                self._create_button(
+                    label="Update Mask",
+                    callback=self._update_selected_mask_with_brush,
+                    width=82,
+                    height=20,
+                    tag="update_mask_btn"
+                )
+    
+    def _toggle_brush_mode(self, sender, app_data, user_data):
+        """Toggle brush mode on/off."""
+        current = UIStateManager.safe_get_value("brush_mode", False)
+        
+        # If brush mode is being enabled, disable conflicting modes
+        if current:
+            # Disable crop mode if active
+            if (UIStateManager.safe_item_exists("crop_mode") and 
+                UIStateManager.safe_get_value("crop_mode", False)):
+                UIStateManager.safe_set_value("crop_mode", False)
+                if self.main_window and hasattr(self.main_window, 'tool_panel'):
+                    tool_panel = self.main_window.tool_panel
+                    crop_panel = tool_panel.panel_manager.get_panel("crop")
+                    if crop_panel:
+                        crop_panel.toggle_crop_mode(None, None, None)
+            
+            # Disable segmentation mode if active
+            if (UIStateManager.safe_item_exists("segmentation_mode") and 
+                UIStateManager.safe_get_value("segmentation_mode", False)):
+                UIStateManager.safe_set_value("segmentation_mode", False)
+                self._toggle_segmentation_mode(None, None, None)
+        
+        # Show/hide brush controls panel
+        UIStateManager.safe_configure_item("brush_controls_panel", show=current)
+        
+        # Enable/disable brush mode in main window
+        if self.main_window and hasattr(self.main_window, 'set_brush_mode'):
+            self.main_window.set_brush_mode(current)
+            
+            # If enabling brush mode and we're currently editing a mask, load it into the brush
+            if current and self.mask_editing_enabled and self.current_mask_index >= 0:
+                self._load_mask_into_brush_tool()
+        
+        # Update brush controls button labels based on context
+        self._update_brush_controls_for_context()
+        
+        # Trigger main callback
+        self._param_changed(sender, app_data, user_data)
+    
+    def _on_brush_parameter_change(self, sender, app_data, user_data):
+        """Handle brush parameter changes."""
+        # Update brush parameters in main window
+        if self.main_window and hasattr(self.main_window, '_update_brush_parameters'):
+            self.main_window._update_brush_parameters()
+        
+        # Trigger main callback
+        self._param_changed(sender, app_data, user_data)
+    
+    def _clear_brush_mask(self, sender, app_data, user_data):
+        """Clear the current brush mask."""
+        if self.main_window and hasattr(self.main_window, 'clear_brush_mask'):
+            self.main_window.clear_brush_mask()
+            self.main_window._update_status("✓ Cleared brush mask")
+        self._param_changed(sender, app_data, user_data)
+    
+    def _add_brush_mask_to_collection(self, sender, app_data, user_data):
+        """Add the current brush mask to the mask collection."""
+        if self.main_window and hasattr(self.main_window, 'add_brush_mask_to_collection'):
+            success = self.main_window.add_brush_mask_to_collection()
+            if success:
+                # Update the mask table to show the new mask
+                if self.main_window.app_service:
+                    masks = self.main_window.app_service.get_mask_service().get_masks()
+                    mask_names = self.main_window.app_service.get_mask_service().get_mask_names()
+                    self.update_masks(masks, mask_names)
+                    
+                    # Update mask overlays but don't auto-show since this is a new mask addition
+                    if hasattr(self.main_window, 'update_mask_overlays'):
+                        self.main_window.update_mask_overlays(masks, auto_show_first=False)
+                
+                self.main_window._update_status("✓ Brush mask added to collection")
+            else:
+                self.main_window._update_status("✗ No brush mask to add")
+        
+        self._param_changed(sender, app_data, user_data)
+    
     def _draw_mask_management_controls(self):
         """Draw mask management controls."""
         dpg.add_separator()
         dpg.add_spacer(height=5)
-        
+        dpg.add_text("Mask Management", color=[200, 200, 200])
+
         # Show/hide mask overlay control
         self._create_checkbox(
             label="Show Mask Overlay",
@@ -176,22 +414,32 @@ class MasksPanel(BasePanel):
         if UIStateManager.safe_item_exists("show_mask_overlay"):
             dpg.set_item_callback("show_mask_overlay", self._toggle_mask_overlay)
         
+        # Show all masks checkbox
+        self._create_checkbox(
+            label="Show All Masks",
+            tag="show_all_masks",
+            default=False
+        )
+        
+        if UIStateManager.safe_item_exists("show_all_masks"):
+            dpg.set_item_callback("show_all_masks", self._toggle_show_all_masks)
+        
         dpg.add_spacer(height=5)
         
-        # Mask management buttons
+        # Mask management buttons (moved just above table)
         with dpg.group(horizontal=True):
             self._create_button(
-                label="Delete Selected",
+                label="Delete",
                 callback=self._delete_selected_masks,
-                width=82,
+                width=100,
                 height=20,
                 tag="delete_mask_btn"
             )
             
             self._create_button(
-                label="Rename Mask",
+                label="Rename",
                 callback=self._rename_selected_mask,
-                width=82,
+                width=90,
                 height=20,
                 tag="rename_mask_btn"
             )
@@ -199,7 +447,7 @@ class MasksPanel(BasePanel):
             self._create_button(
                 label="Group",
                 callback=self._toggle_group_selected_masks,
-                width=82,
+                width=90,
                 height=20,
                 tag="group_ungroup_btn"
             )
@@ -209,6 +457,8 @@ class MasksPanel(BasePanel):
         for i, tag in enumerate(button_tags):
             # Note: This is a simplified approach - in practice you'd need to track button creation
             pass
+
+        dpg.add_spacer(height=5)
     
     def _draw_mask_table(self):
         """Draw the mask selection table."""
@@ -225,6 +475,89 @@ class MasksPanel(BasePanel):
             height=120
         ):
             dpg.add_table_column(label="Mask Name", width_stretch=True)
+
+    def _draw_inpainting_controls(self):
+        """Draw inpainting controls section at the bottom of the mask panel."""
+        dpg.add_separator()
+        dpg.add_spacer(height=5)
+        
+        # Inpainting section with toggle
+        self._create_checkbox(
+            label="Inpainting",
+            tag="inpainting_toggle",
+            default=False
+        )
+        
+        # Set specific callback for inpainting toggle
+        if UIStateManager.safe_item_exists("inpainting_toggle"):
+            dpg.set_item_callback("inpainting_toggle", self.toggle_inpainting_section)
+        
+        # Inpainting panel content (initially hidden)
+        with dpg.child_window(
+            tag="inpainting_panel",
+            height=300,
+            autosize_x=True,
+            show=False,
+            border=False
+        ):
+            # Positive prompt with label above
+            dpg.add_text("Positive Prompt:", color=[200, 200, 200])
+            dpg.add_input_text(tag="reimagine_positive_prompt", width=-1, multiline=True, height=30)
+            
+            # Negative prompt with label above
+            dpg.add_text("Negative Prompt:", color=[200, 200, 200])
+            dpg.add_input_text(tag="reimagine_negative_prompt", width=-1, multiline=True, height=30)
+            
+            # Inference Steps slider with label above
+            dpg.add_text("Inference Steps:", color=[200, 200, 200])
+            dpg.add_slider_int(
+                tag="reimagine_steps",
+                default_value=30,
+                min_value=1,
+                max_value=100,
+                width=-1,
+                height=18,
+                callback=self._param_changed
+            )
+            
+            # Guidance Scale slider with label above
+            dpg.add_text("Guidance Scale:", color=[200, 200, 200])
+            dpg.add_slider_float(
+                tag="reimagine_guidance",
+                default_value=7.5,
+                min_value=1.0,
+                max_value=20.0,
+                width=-1,
+                height=18,
+                callback=self._param_changed
+            )
+            
+            # Strength slider with label above
+            dpg.add_text("Strength:", color=[200, 200, 200])
+            dpg.add_slider_float(
+                tag="reimagine_strength",
+                default_value=0.95,
+                min_value=0.1,
+                max_value=1.0,
+                width=-1,
+                height=18,
+                callback=self._param_changed
+            )
+            
+            dpg.add_spacer(height=5)
+            
+            self._create_button(
+                label="Reimagine Mask",
+                callback=self._reimagine_selected_mask,
+                width=-1,
+                height=20,
+                tag="reimagine_btn"
+            )
+
+    def toggle_inpainting_section(self, sender, app_data, user_data):
+        """Toggle the visibility of the inpainting section."""
+        current = UIStateManager.safe_get_value("inpainting_toggle", False)
+        UIStateManager.safe_configure_item("inpainting_panel", show=current)
     
     def toggle_mask_section(self, sender, app_data, user_data):
         """Toggle the visibility of the mask section and control editing mode."""
@@ -272,8 +605,21 @@ class MasksPanel(BasePanel):
             if hasattr(self.main_window, 'disable_segmentation_mode'):
                 self.main_window.disable_segmentation_mode()
         
+        # Disable brush mode
+        if UIStateManager.safe_item_exists("brush_mode"):
+            UIStateManager.safe_set_value("brush_mode", False)
+            if hasattr(self.main_window, 'set_brush_mode'):
+                self.main_window.set_brush_mode(False)
+        
+        # Disable inpainting toggle
+        if UIStateManager.safe_item_exists("inpainting_toggle"):
+            UIStateManager.safe_set_value("inpainting_toggle", False)
+        
         # Ensure segmentation controls are hidden
         UIStateManager.safe_configure_item("segmentation_controls", show=False)
+        
+        # Ensure inpainting panel is hidden
+        UIStateManager.safe_configure_item("inpainting_panel", show=False)
         
         # CRITICAL: Clear mask selection and editing state FIRST
         # Clear UI selection state in the mask table
@@ -289,7 +635,7 @@ class MasksPanel(BasePanel):
         if self.main_window and self.main_window.app_service and self.main_window.app_service.image_service:
             processor = self.main_window.app_service.image_service.image_processor
             if processor:
-                processor.set_mask_editing(False)
+                processor.switch_to_global_editing()
 
         # Load saved global parameters (not defaults!)
         self._load_global_parameters()
@@ -298,9 +644,15 @@ class MasksPanel(BasePanel):
         self.control_groups.disable_group("mask_controls")
         self.control_groups.hide_group("mask_containers")
         
-        # Force an immediate image update to show global editing mode
-        if self.callback:
-            self.callback(None, None, None)
+        # Update the display with the current processed image
+        if (self.main_window and hasattr(self.main_window, 'event_coordinator')
+                and self.main_window.app_service
+                and self.main_window.app_service.image_service):
+            processor = self.main_window.app_service.image_service.image_processor
+            if processor:
+                processed = processor.get_display_image()
+                self.main_window.event_coordinator._update_image_display(processed)
+                self.main_window.event_coordinator._update_histogram(processed)
     
     def _clear_all_mask_selections(self):
         """Clear all mask selections and update UI synchronization."""
@@ -329,6 +681,15 @@ class MasksPanel(BasePanel):
         self.control_groups.enable_group("mask_controls")
         self.control_groups.show_group("mask_containers")
         
+        # Ensure brush and inpainting panels remain hidden unless their toggles are checked
+        brush_mode_active = UIStateManager.safe_get_value("brush_mode", False)
+        if not brush_mode_active:
+            UIStateManager.safe_configure_item("brush_controls_panel", show=False)
+        
+        inpainting_active = UIStateManager.safe_get_value("inpainting_toggle", False)
+        if not inpainting_active:
+            UIStateManager.safe_configure_item("inpainting_panel", show=False)
+        
         # Ensure segmentation controls remain hidden unless segmentation mode is active
         segmentation_mode_active = UIStateManager.safe_get_value("segmentation_mode", False)
         if not segmentation_mode_active:
@@ -349,52 +710,433 @@ class MasksPanel(BasePanel):
             self._show_all_mask_overlays()
 
     def _auto_segment(self, sender, app_data, user_data):
-        """Trigger automatic segmentation through application service."""
+        """Trigger optimized automatic segmentation through application service."""
         # Check if masks are enabled
         masks_enabled = UIStateManager.safe_get_value("mask_section_toggle", True)
         
         if not masks_enabled:
             return
         
-        # Show loading indicator
+        # Start threaded segmentation to prevent UI blocking
+        if not self.mask_processing_active:
+            self.segmentation_task = self.executor.submit(self._perform_optimized_auto_segmentation_sync)
+    
+    def _perform_optimized_auto_segmentation_sync(self):
+        """Perform autosegmentation with performance optimizations using threading."""
+        if self.mask_processing_active:
+            return
+            
+        self.mask_processing_active = True
         self._show_segmentation_loading()
         
-        # Use ApplicationService instead of going through main window
-        if self.main_window and self.main_window.app_service:
-            try:
-                masks, names = self.main_window.app_service.perform_automatic_segmentation()
+        try:
+            # Get current image
+            current_image = self.main_window.app_service.image_service.get_current_image()
+            if current_image is None:
+                return
                 
-                # Update the UI
-                self.update_masks(masks, names)
+            # Use crop/rotate UI's processed image if available
+            if (self.main_window.app_service.image_service.crop_rotate_ui and 
+                hasattr(self.main_window.app_service.image_service.crop_rotate_ui, 'original_image')):
+                image_to_segment = self.main_window.app_service.image_service.crop_rotate_ui.original_image
+            else:
+                image_to_segment = current_image
                 
-                # Update mask overlays
-                if self.main_window and hasattr(self.main_window, 'update_mask_overlays'):
-                    self.main_window.update_mask_overlays(masks)
-                
-                self.main_window._update_status(f"Auto segmentation completed: {len(masks)} masks created")
-            except Exception as e:
-                self.main_window._update_status(f"Auto segmentation failed: {str(e)}")
-            finally:
-                # Always hide loading indicator when done
-                self._hide_segmentation_loading()
-        else:
-            self.main_window._update_status("ApplicationService not available for auto segmentation")
-            # Hide loading indicator if service not available
+            # Perform segmentation in current thread
+            masks = self._segment_with_progress_sync(image_to_segment)
+            
+            # Apply mask limit
+            if len(masks) > self.MAX_MASKS_LIMIT:
+                # Sort by quality metrics and keep best masks
+                masks = self._filter_best_masks(masks, self.MAX_MASKS_LIMIT)
+                # Schedule status update on main thread
+                self._schedule_status_update(
+                    f"Limited to {self.MAX_MASKS_LIMIT} best masks (from {len(masks)} total)"
+                )
+            
+            # Update masks incrementally on main thread
+            self._update_masks_incrementally_sync(masks)
+            
+        except Exception as e:
+            self._schedule_status_update(f"Auto segmentation failed: {str(e)}")
+        finally:
+            self.mask_processing_active = False
             self._hide_segmentation_loading()
+    
+    async def _perform_optimized_auto_segmentation(self):
+        """Perform autosegmentation with performance optimizations."""
+        if self.mask_processing_active:
+            return
+            
+        self.mask_processing_active = True
+        self._show_segmentation_loading()
+        
+        try:
+            # Get current image
+            current_image = self.main_window.app_service.image_service.get_current_image()
+            if current_image is None:
+                return
+                
+            # Use crop/rotate UI's processed image if available
+            if (self.main_window.app_service.image_service.crop_rotate_ui and 
+                hasattr(self.main_window.app_service.image_service.crop_rotate_ui, 'original_image')):
+                image_to_segment = self.main_window.app_service.image_service.crop_rotate_ui.original_image
+            else:
+                image_to_segment = current_image
+                
+            # Perform segmentation in background thread with progress updates
+            masks = await self._segment_with_progress(image_to_segment)
+            
+            # Apply mask limit
+            if len(masks) > self.MAX_MASKS_LIMIT:
+                # Sort by quality metrics and keep best masks
+                masks = self._filter_best_masks(masks, self.MAX_MASKS_LIMIT)
+                self.main_window._update_status(
+                    f"Limited to {self.MAX_MASKS_LIMIT} best masks (from {len(masks)} total)"
+                )
+            
+            # Update masks incrementally
+            await self._update_masks_incrementally(masks)
+            
+        except Exception as e:
+            self.main_window._update_status(f"Auto segmentation failed: {str(e)}")
+        finally:
+            self.mask_processing_active = False
+            self._hide_segmentation_loading()
+    
+    async def _segment_with_progress(self, image):
+        """Perform segmentation with progress reporting."""
+        def run_segmentation():
+            try:
+                # Use the existing segmentation service
+                segmentation_service = self.main_window.app_service.get_segmentation_service()
+                return segmentation_service.segment_image(image)
+            except Exception as e:
+                print(f"Segmentation error: {e}")
+                return []
+                
+        # Run segmentation in thread pool
+        loop = asyncio.get_event_loop()
+        masks = await loop.run_in_executor(self.executor, run_segmentation)
+        return masks
+        
+    def _segment_with_progress_sync(self, image):
+        """Perform segmentation with progress reporting (synchronous version)."""
+        try:
+            # Use the existing segmentation service
+            segmentation_service = self.main_window.app_service.get_segmentation_service()
+            return segmentation_service.segment_image(image)
+        except Exception as e:
+            print(f"Segmentation error: {e}")
+            return []
+        
+    def _filter_best_masks(self, masks: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+        """Filter masks to keep only the best ones based on quality metrics."""
+        if not masks:
+            return masks
+        
+        # First apply quality filtering from performance manager
+        if hasattr(self, 'performance_manager'):
+            filtered_masks = self.performance_manager.filter_high_quality_masks(masks)
+            if len(filtered_masks) <= limit:
+                return filtered_masks
+            masks = filtered_masks
+        
+        # Then apply sorting by quality score
+        def mask_quality_score(mask):
+            area = mask.get('area', 0)
+            stability = mask.get('stability_score', 0)
+            iou = mask.get('predicted_iou', 0)
+            
+            # Normalize area (prefer medium-sized masks, not too small or too large)
+            area_score = min(area / 10000, 1.0) if area < 50000 else max(0.5, 1.0 - (area - 50000) / 100000)
+            
+            # Combined score
+            return (stability * 0.4) + (iou * 0.4) + (area_score * 0.2)
+        
+        # Sort by quality score (descending)
+        sorted_masks = sorted(masks, key=mask_quality_score, reverse=True)
+        return sorted_masks[:limit]
+        
+    async def _update_masks_incrementally(self, masks: List[Dict[str, Any]]):
+        """Update masks incrementally to avoid UI freezing."""
+        mask_service = self.main_window.app_service.get_mask_service()
+        
+        # Clear existing masks first
+        mask_service.clear_all_masks()
+        
+        # Add masks in batches
+        current_masks = []
+        for i in range(0, len(masks), self.BATCH_SIZE):
+            batch = masks[i:i + self.BATCH_SIZE]
+            self.current_batch = i // self.BATCH_SIZE + 1
+            total_batches = (len(masks) + self.BATCH_SIZE - 1) // self.BATCH_SIZE
+            
+            # Add current batch to accumulated masks
+            current_masks.extend(batch)
+            
+            # Replace all masks with accumulated masks so far
+            mask_service.replace_all_masks(current_masks)
+                
+            # Update UI with current progress
+            progress_msg = f"Processing masks: batch {self.current_batch}/{total_batches}"
+            self.main_window._update_status(progress_msg)
+            
+            # Throttled UI update
+            await self._throttled_ui_update()
+            
+            # Small delay to prevent UI freezing
+            await asyncio.sleep(0.01)
+            
+        # Final complete update
+        final_masks = mask_service.get_masks()
+        mask_names = mask_service.get_mask_names()
+        
+        # Update UI and overlays
+        self.update_masks(final_masks, mask_names)
+        await self._update_overlays_progressively(final_masks)
+        
+        self.main_window._update_status(
+            f"Auto segmentation completed: {len(final_masks)} masks created"
+        )
+        
+    def _update_masks_incrementally_sync(self, masks: List[Dict[str, Any]]):
+        """Update masks incrementally to avoid UI freezing (synchronous version)."""
+        mask_service = self.main_window.app_service.get_mask_service()
+        
+        # Clear existing masks first
+        mask_service.clear_all_masks()
+        
+        # Add masks in batches with small delays
+        current_masks = []
+        for i in range(0, len(masks), self.BATCH_SIZE):
+            batch = masks[i:i + self.BATCH_SIZE]
+            self.current_batch = i // self.BATCH_SIZE + 1
+            total_batches = (len(masks) + self.BATCH_SIZE - 1) // self.BATCH_SIZE
+            
+            # Add current batch to accumulated masks
+            current_masks.extend(batch)
+            
+            # Replace all masks with accumulated masks so far
+            mask_service.replace_all_masks(current_masks)
+                
+            # Update UI with current progress
+            progress_msg = f"Processing masks: batch {self.current_batch}/{total_batches}"
+            self._schedule_status_update(progress_msg)
+            
+            # Update UI periodically
+            if i % (self.BATCH_SIZE * 2) == 0:  # Every 2 batches
+                self._update_ui_sync()
+            
+            # Small delay to prevent UI freezing
+            time.sleep(0.01)
+            
+        # Final complete update
+        final_masks = mask_service.get_masks()
+        mask_names = mask_service.get_mask_names()
+        
+        # Update UI and overlays on main thread
+        self._schedule_ui_update(final_masks, mask_names)
+        
+        self._schedule_status_update(
+            f"Auto segmentation completed: {len(final_masks)} masks created"
+        )
+        
+    async def _throttled_ui_update(self):
+        """Throttle UI updates to prevent overwhelming the interface."""
+        current_time = time.time() * 1000  # Convert to milliseconds
+        
+        if current_time - self.last_ui_update >= self.UI_UPDATE_THROTTLE_MS:
+            if not self.pending_ui_update:
+                self.pending_ui_update = True
+                
+                # Get current masks for update
+                mask_service = self.main_window.app_service.get_mask_service()
+                current_masks = mask_service.get_masks()
+                mask_names = mask_service.get_mask_names()
+                
+                # Update masks UI
+                self.update_masks(current_masks, mask_names)
+                
+                self.last_ui_update = current_time
+                self.pending_ui_update = False
+                
+                # Small delay to let UI process
+                await asyncio.sleep(0.001)
+                
+    async def _update_overlays_progressively(self, masks: List[Dict[str, Any]]):
+        """Update mask overlays progressively to avoid rendering bottlenecks."""
+        if not hasattr(self.main_window, 'mask_overlay_renderer'):
+            return
+            
+        renderer = self.main_window.mask_overlay_renderer
+        crop_rotate_ui = self.main_window.crop_rotate_ui
+        
+        if not renderer or not crop_rotate_ui:
+            return
+            
+        # Update overlays in smaller batches
+        overlay_batch_size = 5
+        for i in range(0, len(masks), overlay_batch_size):
+            batch = masks[i:i + overlay_batch_size]
+            
+            # Update this batch of overlays but don't auto-show
+            renderer.update_mask_overlays(batch, crop_rotate_ui, auto_show_first=False)
+            
+            # Small delay between batches
+            await asyncio.sleep(self.OVERLAY_UPDATE_DELAY / 1000.0)
+    
+    def _schedule_status_update(self, message: str):
+        """Schedule a status update on the main thread."""
+        try:
+            if self.main_window:
+                # For DearPyGUI, we can directly update from background threads
+                self.main_window._update_status(message)
+        except Exception as e:
+            print(f"Error scheduling status update: {e}")
+    
+    def _schedule_ui_update(self, masks: List[Dict[str, Any]], mask_names: List[str]):
+        """Schedule a UI update on the main thread."""
+        try:
+            # Update masks UI
+            self.update_masks(masks, mask_names)
+            
+            # Update overlays progressively
+            self._update_overlays_sync(masks)
+        except Exception as e:
+            print(f"Error scheduling UI update: {e}")
+    
+    def _update_ui_sync(self):
+        """Update UI synchronously."""
+        try:
+            mask_service = self.main_window.app_service.get_mask_service()
+            current_masks = mask_service.get_masks()
+            mask_names = mask_service.get_mask_names()
+            
+            # Update masks UI
+            self.update_masks(current_masks, mask_names)
+        except Exception as e:
+            print(f"Error in sync UI update: {e}")
+    
+    def _update_overlays_sync(self, masks: List[Dict[str, Any]]):
+        """Update mask overlays synchronously."""
+        if not hasattr(self.main_window, 'mask_overlay_renderer'):
+            return
+            
+        renderer = self.main_window.mask_overlay_renderer
+        crop_rotate_ui = self.main_window.crop_rotate_ui
+        
+        if not renderer or not crop_rotate_ui:
+            return;
+        try:
+            # Update all overlays at once but don't auto-show
+            renderer.update_mask_overlays(masks, crop_rotate_ui, auto_show_first=False)
+        except Exception as e:
+            print(f"Error updating overlays: {e}")
+    
+    def _on_max_masks_changed(self, sender, app_data, user_data):
+        """Handle max masks limit change."""
+        new_limit = max(1, min(app_data, 200))
+        self.MAX_MASKS_LIMIT = new_limit
+        
+        # Update performance manager if available
+        if hasattr(self, 'performance_manager'):
+            self.performance_manager.config['max_masks'] = new_limit
+        
+        self.main_window._update_status(f"Max masks limit set to {new_limit}")
+    
+    def set_performance_mode(self, mode: str):
+        """Set performance mode and update settings accordingly."""
+        from utils.performance_config import PerformanceConfig
+        
+        # Update configuration
+        perf_config = PerformanceConfig.get_optimized_settings(mode)
+        
+        self.MAX_MASKS_LIMIT = perf_config['max_masks']
+        self.UI_UPDATE_THROTTLE_MS = perf_config['ui_throttle']
+        self.BATCH_SIZE = perf_config['batch_size']
+        self.OVERLAY_UPDATE_DELAY = perf_config['overlay_delay']
+        
+        # Update performance manager
+        if hasattr(self, 'performance_manager'):
+            self.performance_manager.config = perf_config
+        
+        # Update UI control if it exists
+        if UIStateManager.safe_item_exists("max_masks_input"):
+            UIStateManager.safe_set_value("max_masks_input", self.MAX_MASKS_LIMIT)
+        
+        self.main_window._update_status(f"Performance mode set to: {mode} (max masks: {self.MAX_MASKS_LIMIT})")
+    
+    def cleanup_performance_optimizations(self):
+        """Clean up performance optimization resources."""
+        if hasattr(self, 'segmentation_task') and self.segmentation_task and not self.segmentation_task.done():
+            self.segmentation_task.cancel()
+        if hasattr(self, 'executor'):
+            self.executor.shutdown(wait=False)
+        self.mask_processing_active = False
+        
+        # Cleanup performance manager cache
+        if hasattr(self, 'performance_manager'):
+            self.performance_manager.cleanup_if_needed()
+    
+    def set_segmentation_limits(self, max_masks: int = 50, batch_size: int = 10):
+        """Configure segmentation performance limits."""
+        self.MAX_MASKS_LIMIT = max(1, min(max_masks, 200))
+        self.BATCH_SIZE = max(1, min(batch_size, 50))
+        
+        # Update UI control if it exists
+        if UIStateManager.safe_item_exists("max_masks_input"):
+            UIStateManager.safe_set_value("max_masks_input", self.MAX_MASKS_LIMIT)
     
     def _clear_all_masks(self, sender, app_data, user_data):
         """Clear all masks through application service."""
         if self.main_window and self.main_window.app_service:
+            # First, disable mask editing and commit any current edits to prevent data loss
+            if self.mask_editing_enabled:
+                self._commit_current_edits_to_base()
+                self.mask_editing_enabled = False
+                self.current_mask_index = -1
+            
+            # Clear all mask-related state
+            self.mask_params.clear()
+            self.mask_committed_params.clear()
+            self.mask_base_image_states.clear()
+            self.selected_mask_indices.clear()
+            
+            # Clear group data
+            self.mask_groups.clear()
+            self.mask_to_group.clear()
+            
+            # Clear masks through service
             self.main_window.app_service.clear_all_masks()
+            
+            # Reset image processor to original state completely
+            if (self.main_window.app_service.image_service and 
+                self.main_window.app_service.image_service.image_processor):
+                processor = self.main_window.app_service.image_service.image_processor
+                
+                # Switch to global editing and reset all edits
+                processor.reset()
+                processor.switch_to_global_editing()
+            
+            # Reset UI parameters to defaults and clear global params
+            self._reset_ui_parameters_to_defaults()
+            self.global_params = None  # Clear saved global parameters
             
             # Update the UI
             self.update_masks([], [])
             
-            # Update mask overlays
+            # Clean up mask overlays completely
+            if hasattr(self.main_window, 'mask_overlay_renderer') and self.main_window.mask_overlay_renderer:
+                self.main_window.mask_overlay_renderer.cleanup_all_mask_overlays()
             if hasattr(self.main_window, 'update_mask_overlays'):
-                self.main_window.update_mask_overlays([])
+                self.main_window.update_mask_overlays([], auto_show_first=False)
             
-            self.main_window._update_status("✅ All masks cleared")
+            # Force image refresh to show original image without any mask edits
+            if self.callback:
+                self.callback(None, None, None)
+            
+            self.main_window._update_status("All masks cleared and image reset to original")
     
     def _toggle_segmentation_mode(self, sender, app_data, user_data):
         """Toggle unified box selection/segmentation mode."""
@@ -468,9 +1210,9 @@ class MasksPanel(BasePanel):
                         mask_names = self.main_window.app_service.get_mask_service().get_mask_names()
                         self.update_masks(masks, mask_names)
                         
-                        # Update mask overlays
+                        # Update mask overlays but don't auto-show new segmentation masks
                         if hasattr(self.main_window, 'update_mask_overlays'):
-                            self.main_window.update_mask_overlays(masks)
+                            self.main_window.update_mask_overlays(masks, auto_show_first=False)
                     else:
                         self.main_window._update_status(message)
                         
@@ -522,10 +1264,33 @@ class MasksPanel(BasePanel):
         if not self.selected_mask_indices:
             self.main_window._update_status("No masks selected for deletion")
             return
+        
+        # CRITICAL: Handle parameter saving for mask deletion
+        # Only save parameters if we're NOT deleting the currently edited mask
+        # If we ARE deleting the currently edited mask, we should discard its parameters
+        currently_edited_mask_being_deleted = (
+            self.mask_editing_enabled and 
+            self.current_mask_index >= 0 and 
+            self.current_mask_index in self.selected_mask_indices
+        )
+        
+        if self.mask_editing_enabled and self.current_mask_index >= 0:
+            if currently_edited_mask_being_deleted:
+                print(f"Current mask {self.current_mask_index} is being deleted - discarding its parameters")
+                # Don't save parameters for a mask that's being deleted
+                # Instead, immediately switch to global editing to prevent parameter bleed
+                self._disable_mask_editing(save_current_params=False)
+            else:
+                # Save parameters only if we're not deleting the current mask
+                self._save_mask_parameters(self.current_mask_index)
+                print(f"Saved parameters for current mask {self.current_mask_index} before deletion")
                
         # Clean up group data for deleted masks and delete them
         for mask_index in sorted(self.selected_mask_indices, reverse=True):
             self._cleanup_group_data_for_deleted_mask(mask_index)
+            
+            # CRITICAL: Clean up UI parameters and committed edits before deletion
+            self._cleanup_mask_parameters_and_edits(mask_index)
             
             # Use ApplicationService to delete mask
             success = self.main_window.app_service.delete_mask(mask_index)
@@ -544,12 +1309,138 @@ class MasksPanel(BasePanel):
         # Update UI
         self.update_masks(masks, names)
         
-        # Update mask overlays
+        # CRITICAL: Apply editing logic after deletion to handle parameter state
+        # This ensures that if no masks are selected, we properly return to global editing
+        # and load global parameters, or reset to defaults if needed
+        self._apply_editing_logic()
+        
+        # Special handling for when we deleted the currently edited mask
+        if currently_edited_mask_being_deleted:
+            # If we deleted the currently edited mask, ensure clean global state
+            if not self.mask_editing_enabled:
+                if self.global_params:
+                    # We have saved global parameters, load them
+                    self._load_global_parameters()
+                    self.main_window._update_status("Loaded saved global parameters after deleting current mask")
+                else:
+                    # No saved global parameters, reset to defaults for clean state
+                    self._reset_ui_parameters_to_defaults()
+                    self.main_window._update_status("Reset parameters to defaults after deleting current mask")
+        
+        # If we're now in global editing mode but have no saved global parameters,
+        # reset to defaults to ensure clean state after mask deletion
+        elif not self.mask_editing_enabled and not self.global_params:
+            self._reset_ui_parameters_to_defaults()
+            self.main_window._update_status("UI parameters reset to defaults after mask deletion")
+        
+        # Update mask overlays but don't auto-show after deletion
         if hasattr(self.main_window, 'update_mask_overlays'):
-            self.main_window.update_mask_overlays(masks)
+            self.main_window.update_mask_overlays(masks, auto_show_first=False)
+        
+        # Update the central panel image to reflect any restored visual state
+        if hasattr(self.main_window, 'crop_rotate_ui') and self.main_window.crop_rotate_ui:
+            self.main_window.crop_rotate_ui.update_image(None, None, None)
+        
+        # Force a complete image display update including histogram
+        if (self.main_window and self.main_window.app_service and 
+            self.main_window.app_service.image_service and 
+            self.main_window.app_service.image_service.image_processor):
+            
+            processor = self.main_window.app_service.image_service.image_processor
+            # Get the current processed image and update display
+            processed_image = processor.get_display_image()
+            if processed_image is not None and hasattr(self.main_window, 'event_coordinator'):
+                self.main_window.event_coordinator._update_image_display(processed_image)
+                self.main_window.event_coordinator._update_histogram(processed_image)
+        
+        # Also trigger a parameter update to refresh any UI state
+        if self.callback:
+            self.callback(None, None, None)
         
         # Update group button label
         self._update_group_button_label()
+    
+    def _cleanup_mask_parameters_and_edits(self, mask_index: int):
+        """Clean up UI parameters and committed edits for a deleted mask and adjust indices."""
+        try:
+            # 1. Remove parameters for the deleted mask from UI dictionaries
+            if mask_index in self.mask_params:
+                del self.mask_params[mask_index]
+            if mask_index in self.mask_committed_params:
+                del self.mask_committed_params[mask_index]
+            if mask_index in self.mask_base_image_states:
+                del self.mask_base_image_states[mask_index]
+            
+            # 2. Clean up committed edits from image processor
+            if (self.main_window and self.main_window.app_service and 
+                self.main_window.app_service.image_service and 
+                self.main_window.app_service.image_service.image_processor):
+                
+                processor = self.main_window.app_service.image_service.image_processor
+                # Use the processor's dedicated method for cleaning up mask edits
+                processor.delete_mask_edits(mask_index)
+            
+            # 3. Adjust UI parameter indices for masks after the deleted one
+            self._adjust_ui_parameter_indices(mask_index)
+            
+            # 4. Reset current mask editing if we were editing the deleted mask
+            if self.mask_editing_enabled and self.current_mask_index == mask_index:
+                self.mask_editing_enabled = False
+                self.current_mask_index = -1
+            elif self.current_mask_index > mask_index:
+                self.current_mask_index -= 1
+            
+            print(f"Cleaned up all parameters and edits for deleted mask {mask_index}")
+            
+        except Exception as e:
+            print(f"Error cleaning up parameters for mask {mask_index}: {e}")
+    
+    def _adjust_ui_parameter_indices(self, deleted_mask_index: int):
+        """Adjust indices in UI parameter dictionaries after a mask deletion."""
+        try:
+            print(f"Adjusting UI parameter indices after deleting mask {deleted_mask_index}")
+            print(f"Before adjustment - mask_params keys: {list(self.mask_params.keys())}")
+            print(f"Before adjustment - mask_committed_params keys: {list(self.mask_committed_params.keys())}")
+            
+            # Adjust mask_params
+            new_mask_params = {}
+            for idx, params in self.mask_params.items():
+                if idx > deleted_mask_index:
+                    new_idx = idx - 1
+                    new_mask_params[new_idx] = params
+                    print(f"Moved mask_params from index {idx} to {new_idx}")
+                elif idx < deleted_mask_index:
+                    new_mask_params[idx] = params
+                    print(f"Kept mask_params at index {idx}")
+            self.mask_params = new_mask_params
+            
+            # Adjust mask_committed_params
+            new_committed_params = {}
+            for idx, params in self.mask_committed_params.items():
+                if idx > deleted_mask_index:
+                    new_idx = idx - 1
+                    new_committed_params[new_idx] = params
+                    print(f"Moved mask_committed_params from index {idx} to {new_idx}")
+                elif idx < deleted_mask_index:
+                    new_committed_params[idx] = params
+                    print(f"Kept mask_committed_params at index {idx}")
+            self.mask_committed_params = new_committed_params
+            
+            # Adjust mask_base_image_states
+            new_base_states = {}
+            for idx, state in self.mask_base_image_states.items():
+                if idx > deleted_mask_index:
+                    new_idx = idx - 1
+                    new_base_states[new_idx] = state
+                elif idx < deleted_mask_index:
+                    new_base_states[idx] = state
+            self.mask_base_image_states = new_base_states
+            
+            print(f"After adjustment - mask_params keys: {list(self.mask_params.keys())}")
+            print(f"After adjustment - mask_committed_params keys: {list(self.mask_committed_params.keys())}")
+            
+        except Exception as e:
+            print(f"Error adjusting UI parameter indices after deletion of mask {deleted_mask_index}: {e}")
     
     def _rename_selected_mask(self, sender, app_data, user_data):
         """Rename the selected mask (single selection only)."""
@@ -626,7 +1517,72 @@ class MasksPanel(BasePanel):
         # Close the window
         if UIStateManager.safe_item_exists("rename_mask_window"):
             dpg.delete_item("rename_mask_window")
+
+    def _reimagine_selected_mask(self, sender, app_data, user_data):
+        """Regenerate content inside the selected mask using a prompt."""
+        if len(self.selected_mask_indices) != 1:
+            if self.main_window:
+                self.main_window._update_status("Please select exactly one mask to reimagine")
+            return
+
+        mask_index = next(iter(self.selected_mask_indices))
+        positive_prompt = UIStateManager.safe_get_value("reimagine_positive_prompt", "")
+        negative_prompt = UIStateManager.safe_get_value("reimagine_negative_prompt", "")
+        
+        # Allow empty prompts - use defaults in generative service if needed
+        
+        # Get inference parameters from UI
+        num_inference_steps = UIStateManager.safe_get_value("reimagine_steps", 30)
+        guidance_scale = UIStateManager.safe_get_value("reimagine_guidance", 7.5)
+        strength = UIStateManager.safe_get_value("reimagine_strength", 0.95)
+        
+        if self.main_window and self.main_window.app_service:
+            try:
+                self.main_window._update_status("Reimagining mask... This may take a few moments.")
+                result = self.main_window.app_service.reimagine_mask(
+                    mask_index, 
+                    positive_prompt,
+                    negative_prompt=negative_prompt,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    strength=strength
+                )
+                if result is not None:
+                    # CRITICAL: Update the stored base image state to include the inpainting result
+                    # This ensures that clicking on the mask again won't revert the inpainting
+                    self._update_mask_base_image_state_after_inpainting(mask_index)
+                    
+                    if self.callback:
+                        self.callback(None, None, None)
+                    self.main_window._update_status(f"Successfully reimagined mask {mask_index}")
+                else:
+                    self.main_window._update_status("Reimagine failed: No result generated")
+            except ValueError as e:
+                self.main_window._update_status(f"Configuration error: {str(e)}")
+            except ImportError as e:
+                self.main_window._update_status(f"Missing dependencies: {str(e)}. Please install diffusers: pip install diffusers")
+            except RuntimeError as e:
+                error_msg = str(e)
+                if "Sizes of tensors must match" in error_msg:
+                    self.main_window._update_status("Model compatibility error. This may be due to diffusers version mismatch. Try: pip install diffusers==0.21.4")
+                elif "Failed to load any generative model" in error_msg:
+                    self.main_window._update_status("Model loading failed. Check internet connection and disk space. The first run may take time to download models.")
+                else:
+                    self.main_window._update_status(f"Model loading error: {error_msg}")
+            except Exception as e:
+                self.main_window._update_status(f"Reimagine failed: {str(e)}")
     
+    def _update_mask_base_image_state_after_inpainting(self, mask_index: int):
+        """Update the stored base image state after successful inpainting to preserve the result."""
+        try:
+            # With the new processor architecture, this is handled automatically
+            # The processor maintains edit history and reapplies everything from original
+            # No need to manually manage base image states
+            print(f"Inpainting result for mask {mask_index} preserved automatically by new processor architecture")
+            
+        except Exception as e:
+            print(f"Error in post-inpainting update for mask {mask_index}: {e}")
+
     def _update_mask_overlays_visibility(self):
         """Update the visibility of mask overlays based on selection."""
         if not self.main_window:
@@ -647,55 +1603,110 @@ class MasksPanel(BasePanel):
             UIStateManager.safe_get_value("crop_mode", False)):
             return
         
+        # Check if "Show All Masks" is enabled - this overrides normal selection logic
+        show_all_masks = UIStateManager.safe_get_value("show_all_masks", False)
+        
+        # Get all masks
+        if not self.main_window.app_service:
+            return
+        
+        all_masks = self.main_window.app_service.get_mask_service().get_masks()
+        
+        # Use performance manager to get visible masks
+        if hasattr(self, 'performance_manager'):
+            if show_all_masks:
+                visible_masks = self.performance_manager.get_visible_masks(all_masks, set(range(len(all_masks))))
+            else:
+                visible_masks = self.performance_manager.get_visible_masks(all_masks, self.selected_mask_indices)
+        else:
+            # Fallback to old behavior
+            if show_all_masks:
+                visible_masks = all_masks
+            else:
+                visible_masks = [all_masks[i] for i in self.selected_mask_indices if i < len(all_masks)]
+        
         # Use the proper mask overlay renderer instead of MaskOverlayManager
         if hasattr(self.main_window, 'mask_overlay_renderer') and self.main_window.mask_overlay_renderer:
-            if self.selected_mask_indices and len(self.selected_mask_indices) == 1:
-                # Show single selected mask
-                selected_index = next(iter(self.selected_mask_indices))
-                total_masks = len(self.main_window.app_service.get_mask_service().get_masks()) if self.main_window.app_service else 0
-                self.main_window.mask_overlay_renderer.show_selected_mask(selected_index, total_masks)
+            total_masks = len(all_masks)
+            
+            # Ensure overlays are created first before trying to show them
+            if total_masks > 0 and hasattr(self.main_window, 'crop_rotate_ui') and self.main_window.crop_rotate_ui:
+                self.main_window.mask_overlay_renderer.update_mask_overlays(all_masks, self.main_window.crop_rotate_ui, auto_show_first=False)
+            
+            if show_all_masks and total_masks > 0:
+                # Show visible subset of all masks
+                visible_indices = list(range(min(len(visible_masks), total_masks)))
+                self.main_window.mask_overlay_renderer.show_selected_masks(visible_indices, total_masks)
+            elif self.selected_mask_indices:
+                if len(self.selected_mask_indices) == 1:
+                    # Show single selected mask
+                    selected_index = next(iter(self.selected_mask_indices))
+                    self.main_window.mask_overlay_renderer.show_selected_mask(selected_index, total_masks)
+                    self.main_window._update_status(f"Showing mask overlay {selected_index}")
+                else:
+                    # Show multiple selected masks (limited by performance settings)
+                    selected_list = list(self.selected_mask_indices)[:self.performance_manager.config['max_visible_overlays']]
+                    self.main_window.mask_overlay_renderer.show_selected_masks(selected_list, total_masks)
+                    self.main_window._update_status(f"Showing {len(selected_list)} mask overlays")
             else:
-                # Hide all masks if multiple selected or none selected
-                total_masks = len(self.main_window.app_service.get_mask_service().get_masks()) if self.main_window.app_service else 0
-                for i in range(total_masks):
-                    self.main_window.mask_overlay_renderer.show_selected_mask(-1, total_masks)  # -1 means hide all
+                # Hide all masks if none selected and show all is not enabled
+                self.main_window.mask_overlay_renderer.show_selected_mask(-1, total_masks)  # -1 means hide all
         else:
-
             # Fallback to old system if renderer not available
-            if hasattr(self.main_window, 'layer_masks'):
+            if show_all_masks and self.main_window.app_service:
+                visible_indices = list(range(len(visible_masks)))
+                MaskOverlayManager.show_selected_overlays(visible_indices)
+            elif hasattr(self.main_window, 'layer_masks'):
                 MaskOverlayManager.hide_all_overlays(len(self.main_window.layer_masks))
                 MaskOverlayManager.show_selected_overlays(list(self.selected_mask_indices))
     
-    def _disable_mask_editing(self):
-        """Disable mask editing and return to global editing mode."""
-        # Save current mask parameters if we're switching away from a mask
-        if self.mask_editing_enabled and self.current_mask_index >= 0:
-            self._save_mask_parameters(self.current_mask_index)
+    def _disable_mask_editing(self, save_current_params=True):
+        """Disable mask editing and return to global editing mode.
         
-        # Commit current mask edits to base image before disabling
-        self._commit_current_edits_to_base()
+        Args:
+            save_current_params: Whether to save current mask parameters before disabling.
+                                Set to False when deleting the current mask to prevent parameter bleed.
+        """
+        # Save current mask parameters if we're switching away from a mask and should save them
+        if self.mask_editing_enabled and self.current_mask_index >= 0 and save_current_params:
+            self._save_mask_parameters(self.current_mask_index)
+            # Only commit mask edits to base if we were actively editing a mask
+            self._commit_current_edits_to_base()
         
         # Disable mask editing in the processor
         if self.main_window and self.main_window.app_service and self.main_window.app_service.image_service:
             processor = self.main_window.app_service.image_service.image_processor
             if processor:
-                processor.set_mask_editing(False)
+                processor.switch_to_global_editing()
         
         # Reset mask editing state
         self.mask_editing_enabled = False
         self.current_mask_index = -1
         
+        # Update brush controls if brush mode is active
+        if UIStateManager.safe_get_value("brush_mode", False):
+            self._update_brush_controls_for_context()
+            # Clear the brush when switching to global editing
+            if self.main_window and hasattr(self.main_window, 'clear_brush_mask'):
+                self.main_window.clear_brush_mask()
+        
         # Load saved global parameters (not reset to defaults!)
         self._load_global_parameters()
         
-        # Force an immediate image update to show global editing mode
-        if self.callback:
-            self.callback(None, None, None)
+        # Update the display with the current processed image
+        if (self.main_window and hasattr(self.main_window, 'event_coordinator')
+                and self.main_window.app_service
+                and self.main_window.app_service.image_service):
+            processor = self.main_window.app_service.image_service.image_processor
+            if processor:
+                processed = processor.get_display_image()
+                self.main_window.event_coordinator._update_image_display(processed)
+                self.main_window.event_coordinator._update_histogram(processed)
         
         self.main_window._update_status("🌐 Switched to global editing mode")
     
     def _commit_current_edits_to_base(self):
-        """Commit current edits to the base image for cumulative editing."""
+        """Commit current edits using the new processor architecture."""
         if not self.main_window or not self.main_window.app_service:
             return
             
@@ -723,25 +1734,18 @@ class MasksPanel(BasePanel):
             if image_service and image_service.image_processor:
                 processor = image_service.image_processor
                 
-                # Commit current edits to base image
-                processor.commit_edits_to_base(curves_data)
-                
-                # Reset processor parameters to defaults for next editing session
-                processor.exposure = 0
-                processor.illumination = 0.0
-                processor.contrast = 1.0
-                processor.shadow = 0
-                processor.highlights = 0
-                processor.whites = 0
-                processor.blacks = 0
-                processor.saturation = 1.0
-                processor.texture = 0
-                processor.grain = 0
-                processor.temperature = 0
-                
+                if self.mask_editing_enabled:
+                    # Update processor with current curves data before committing
+                    processor.curves_data = curves_data
+                    # Commit mask edits
+                    processor.commit_mask_edits()
+                else:
+                    # Commit global edits
+                    processor.commit_edits_to_base(curves_data)
+            
         except Exception as e:
-            self.main_window._update_status(f"Error committing edits to base: {e}")
-            traceback.print_exc()
+            self.main_window._update_status(f"Error committing edits: {e}")
+            print(f"Error in _commit_current_edits_to_base: {e}")
     
     def _get_current_parameters(self):
         """Get current parameter values from UI controls."""
@@ -750,13 +1754,21 @@ class MasksPanel(BasePanel):
             # Use the event coordinator to collect current parameters
             if (self.main_window and hasattr(self.main_window, 'event_coordinator') and 
                 self.main_window.event_coordinator):
-                params = self.main_window.event_coordinator._collect_current_parameters()
+                result = self.main_window.event_coordinator._collect_current_parameters()
+                # Ensure we got a dict
+                if isinstance(result, dict):
+                    params = result
             # Fallback: get parameters directly from tool panel
             elif self.main_window and hasattr(self.main_window, 'tool_panel') and self.main_window.tool_panel:
-                params = self.main_window.tool_panel.get_all_parameters()
+                result = self.main_window.tool_panel.get_all_parameters()
+                # Ensure we got a dict
+                if isinstance(result, dict):
+                    params = result
         except Exception as e:
             print(f"Error collecting current parameters: {e}")
-        return params
+        
+        # Always return a dict, even if empty
+        return params if isinstance(params, dict) else {}
     
     def _get_current_curves_data(self):
         """Get current curves data from the tool panel."""
@@ -818,7 +1830,7 @@ class MasksPanel(BasePanel):
             # Re-enable callbacks
             tool_panel.enable_parameter_callbacks()
             
-            self.main_window._update_status("✅ UI parameters reset to defaults")
+            self.main_window._update_status("UI parameters reset to defaults")
             
         except Exception as e:
             self.main_window._update_status(f"Error resetting UI parameters: {e}")
@@ -839,76 +1851,93 @@ class MasksPanel(BasePanel):
                 'curves': curves_data
             }
             
-            self.main_window._update_status(f"💾 Saved parameters for mask {mask_index}: {len(current_params)} params, curves: {curves_data is not None}")
+            self.main_window._update_status(f"Saved parameters for mask {mask_index}: {len(current_params)} params, curves: {curves_data is not None}")
             
         except Exception as e:
             self.main_window._update_status(f"Error saving parameters for mask {mask_index}: {e}")
 
-    def _clear_mask_parameters(self, mask_index: int):
-        """Clear saved parameters for a mask when they are committed to base image."""
-        try:
-            if mask_index in self.mask_params:
-                del self.mask_params[mask_index]
-        except Exception as e:
-            print(f"Error clearing parameters for mask {mask_index}: {e}")
-
     def _load_mask_parameters(self, mask_index: int):
         """Load saved parameters for a specific mask for persistent editing."""
         try:
-            # Check if we have saved parameters for this mask
-            if mask_index in self.mask_params:
-                saved_data = self.mask_params[mask_index]
-                saved_params = saved_data.get('parameters', {})
-                saved_curves = saved_data.get('curves')
+            print(f"Loading parameters for mask {mask_index}")
+            print(f"Available mask_params: {list(self.mask_params.keys())}")
+            
+            # With the new processor architecture, we just need to sync UI with processor
+            # The processor automatically loads mask parameters when switching to mask editing
+            if self.main_window and self.main_window.tool_panel:
+                tool_panel = self.main_window.tool_panel
+                tool_panel.disable_parameter_callbacks()
                 
-                if saved_params or saved_curves:
-                    # Temporarily disable callbacks to prevent triggering during load
-                    tool_panel = self.main_window.tool_panel
-                    tool_panel.disable_parameter_callbacks()
+                # Check if we have saved UI parameters for this mask
+                if mask_index in self.mask_params:
+                    saved_data = self.mask_params[mask_index]
+                    saved_params = saved_data.get('parameters', {})
+                    saved_curves = saved_data.get('curves')
                     
-                    # If this mask was previously edited, restore base image to pre-edit state
-                    # This prevents double-application of the saved parameters
-                    if (mask_index in self.mask_base_image_states and 
-                        self.main_window.app_service and self.main_window.app_service.image_service):
-                        processor = self.main_window.app_service.image_service.image_processor
-                        if processor:
-                            # Restore base image to the state before this mask was first edited
-                            processor.base_image = self.mask_base_image_states[mask_index].copy()
+                    print(f"Found saved parameters for mask {mask_index}: {len(saved_params)} params")
                     
-                    # Apply saved parameters to UI controls first
+                    # Apply saved UI parameters
                     for param_name, value in saved_params.items():
                         if UIStateManager.safe_item_exists(param_name):
                             UIStateManager.safe_set_value(param_name, value)
+                            print(f"Set {param_name} = {value}")
                     
                     # Apply saved curves
                     if saved_curves and tool_panel.curves_panel:
                         tool_panel.curves_panel.set_curves(saved_curves)
-                    
-                    # CRITICAL: Keep processor parameters at defaults
-                    # The UI values represent the total change from the restored base image state
-                    # The processor should start from defaults and apply the UI changes on top
-                    if self.main_window.app_service and self.main_window.app_service.image_service:
+                else:
+                    print(f"No saved parameters found for mask {mask_index}, checking processor and resetting if needed")
+                    # No saved UI parameters, check if processor has committed parameters for this mask
+                    has_committed_edits = False
+                    if (self.main_window.app_service and 
+                        self.main_window.app_service.image_service and 
+                        self.main_window.app_service.image_service.image_processor):
                         processor = self.main_window.app_service.image_service.image_processor
-                        if processor:
-                            processor.exposure = 0
-                            processor.illumination = 0.0
-                            processor.contrast = 1.0
-                            processor.shadow = 0
-                            processor.highlights = 0
-                            processor.whites = 0
-                            processor.blacks = 0
-                            processor.saturation = 1.0
-                            processor.texture = 0
-                            processor.grain = 0
-                            processor.temperature = 0
+                        has_committed_edits = mask_index in processor.committed_mask_edits
                     
-                    # Re-enable callbacks
-                    tool_panel.enable_parameter_callbacks()
-                    
-                    # Trigger parameter update to apply the loaded UI values to the processor
-                    if self.callback:
-                        self.callback(None, None, None)
-                    return
+                    if not has_committed_edits:
+                        print(f"No committed edits for mask {mask_index}, resetting to defaults")
+                        self._reset_ui_parameters_to_defaults()
+                        self.main_window._update_status(f"Reset parameters to defaults for mask {mask_index}")
+                    else:
+                        print(f"Found committed edits for mask {mask_index}, syncing UI with processor parameters")
+                        # Processor has committed edits, so sync UI with those parameters
+                        processor = self.main_window.app_service.image_service.image_processor
+                        if mask_index in processor.committed_mask_edits:
+                            committed_data = processor.committed_mask_edits[mask_index]
+                            committed_params = {
+                                'exposure': committed_data.get('exposure', 0),
+                                'illumination': committed_data.get('illumination', 0.0),
+                                'contrast': committed_data.get('contrast', 1.0),
+                                'shadow': committed_data.get('shadow', 0),
+                                'highlights': committed_data.get('highlights', 0),
+                                'whites': committed_data.get('whites', 0),
+                                'blacks': committed_data.get('blacks', 0),
+                                'saturation': committed_data.get('saturation', 1.0),
+                                'texture': committed_data.get('texture', 0),
+                                'grain': committed_data.get('grain', 0),
+                                'temperature': committed_data.get('temperature', 0)
+                            }
+                            committed_curves = committed_data.get('curves_data')
+                            
+                            # Apply committed parameters to UI
+                            for param_name, value in committed_params.items():
+                                if UIStateManager.safe_item_exists(param_name):
+                                    UIStateManager.safe_set_value(param_name, value)
+                            
+                            # Apply committed curves to UI
+                            if committed_curves and tool_panel.curves_panel:
+                                tool_panel.curves_panel.set_curves(committed_curves)
+                        
+                        self.main_window._update_status(f"Synced UI with committed edits for mask {mask_index}")
+                
+                # Re-enable callbacks
+                tool_panel.enable_parameter_callbacks()
+                
+                # Trigger parameter update
+                if self.callback:
+                    self.callback(None, None, None)
+                return
             
             self._reset_ui_parameters_to_defaults()
             
@@ -917,6 +1946,12 @@ class MasksPanel(BasePanel):
             # Make sure to re-enable callbacks even if there's an error
             if self.main_window and self.main_window.tool_panel:
                 self.main_window.tool_panel.enable_parameter_callbacks()
+            # If there's an error, reset to defaults as a safe fallback
+            try:
+                self._reset_ui_parameters_to_defaults()
+                self.main_window._update_status(f"Reset parameters to defaults due to error loading mask {mask_index}")
+            except:
+                pass
     
     def _save_global_parameters(self):
         """Save current global editing parameters."""
@@ -931,7 +1966,7 @@ class MasksPanel(BasePanel):
                 'curves': curves_data
             }
             
-            self.main_window._update_status(f"💾 Saved global parameters: {len(current_params)} params, curves: {curves_data is not None}")
+            self.main_window._update_status(f"Saved global parameters: {len(current_params)} params, curves: {curves_data is not None}")
             
         except Exception as e:
             self.main_window._update_status(f"Error saving global parameters: {e}")
@@ -976,8 +2011,8 @@ class MasksPanel(BasePanel):
         UIStateManager.safe_configure_item("segmentation_controls", show=enabled)
     
     def update_masks(self, masks: List[Dict[str, Any]], mask_names: List[str] = None):
-        """Update the mask table with new masks."""
-        try:           
+        """Update the mask table with new masks - optimized for better performance."""
+        try:
             # Create mask entries with proper names
             if mask_names and len(mask_names) >= len(masks):
                 base_names = mask_names[:len(masks)]
@@ -994,73 +2029,139 @@ class MasksPanel(BasePanel):
                 else:
                     display_name = base_name
                 display_names.append(display_name)
-                            
-            # First, delete all existing rows
-            # Need to create a list first because we'll be modifying as we iterate
-            rows_to_delete = []
             
-            try:
-                # Get all child items in the mask table
-                children = dpg.get_item_children("mask_table", slot=1)
-                if children:
-                    for item_id in children:
-                        # Safely check if item exists and has an alias
-                        if dpg.does_item_exist(item_id):
-                            try:
-                                # Try to get the alias if it exists
-                                tag = None
-                                if dpg.does_alias_exist(item_id):
-                                    tag = dpg.get_item_alias(item_id)
-                                    
-                                # If we found a mask row tag, add it to deletion list
-                                if tag and tag.startswith("mask_row_"):
-                                    rows_to_delete.append(item_id)
-                            except Exception as e:
-                                print(f"Error checking item alias: {e}")
-                                # If there's an error with alias, use a different approach
-                                # Just delete the item directly if it's a table row
-                                if dpg.get_item_type(item_id) == "mvAppItemType::mvTableRow":
-                                    rows_to_delete.append(item_id)
-            except Exception as e:
-                print(f"Error identifying rows to delete: {e}")
-                # Fallback: delete all children
-                if dpg.does_item_exist("mask_table"):
-                    children = dpg.get_item_children("mask_table", slot=1)
-                    if children:
-                        rows_to_delete = children
+            # Try incremental update first for better performance
+            current_count = len(self.mask_checkboxes)
+            new_count = len(display_names)
             
-            # Now delete all rows
-            for row_id in rows_to_delete:
-                try:
-                    if dpg.does_item_exist(row_id):
-                        dpg.delete_item(row_id)
-                except Exception as e:
-                    print(f"Error deleting row {row_id}: {e}")
-                
-            # Clear our tracking collections
-            self.mask_checkboxes.clear()
-            self.selected_mask_indices.clear()
+            # If count is similar and table exists, try incremental update
+            if abs(current_count - new_count) <= 3 and current_count > 0 and UIStateManager.safe_item_exists("mask_table"):
+                success = self._incremental_table_update(display_names)
+                if success:
+                    self._update_group_button_label()
+                    return
             
-            # Add new rows for each mask
-            for idx, display_name in enumerate(display_names):
-                with dpg.table_row(tag=f"mask_row_{idx}", parent="mask_table"):
-                    # Add the selectable item for this row
-                    dpg.add_selectable(
-                        label=display_name,
-                        tag=f"mask_selectable_{idx}",
-                        callback=self._create_row_callback(idx),
-                        span_columns=True
-                    )
-                
-                # Track the selectable item
-                self.mask_checkboxes[idx] = f"mask_selectable_{idx}"
-            
-            # Update group button label
-            self._update_group_button_label()
+            # Fall back to full table recreation
+            self._full_table_update(display_names)
             
         except Exception as e:
             print(f"Error in MasksPanel.update_masks: {e}")
             traceback.print_exc()
+            # Always try full update as fallback
+            try:
+                self._full_table_update(display_names if 'display_names' in locals() else [])
+            except:
+                pass
+    
+    def _incremental_table_update(self, display_names: List[str]) -> bool:
+        """Attempt incremental table update instead of full recreation."""
+        try:
+            current_count = len(self.mask_checkboxes)
+            new_count = len(display_names)
+            
+            # Update existing items
+            for idx in range(min(current_count, new_count)):
+                selectable_tag = f"mask_selectable_{idx}"
+                if UIStateManager.safe_item_exists(selectable_tag):
+                    UIStateManager.safe_configure_item(selectable_tag, label=display_names[idx])
+                    
+            # Add new items if needed
+            if new_count > current_count:
+                for idx in range(current_count, new_count):
+                    with dpg.table_row(tag=f"mask_row_{idx}", parent="mask_table"):
+                        dpg.add_selectable(
+                            label=display_names[idx],
+                            tag=f"mask_selectable_{idx}",
+                            callback=self._create_row_callback(idx),
+                            span_columns=True
+                        )
+                    self.mask_checkboxes[idx] = f"mask_selectable_{idx}"
+                    
+            # Remove extra items if needed
+            elif new_count < current_count:
+                for idx in range(new_count, current_count):
+                    row_tag = f"mask_row_{idx}"
+                    if UIStateManager.safe_item_exists(row_tag):
+                        dpg.delete_item(row_tag)
+                    if idx in self.mask_checkboxes:
+                        del self.mask_checkboxes[idx]
+                        
+            return True
+            
+        except Exception as e:
+            print(f"Incremental update failed: {e}")
+            return False
+    
+    def _full_table_update(self, display_names: List[str]):
+        """Perform full table recreation when incremental update fails."""
+        # First, delete all existing rows
+        rows_to_delete = []
+        
+        try:
+            # Get all child items in the mask table
+            children = dpg.get_item_children("mask_table", slot=1)
+            if children:
+                for item_id in children:
+                    # Safely check if item exists and has an alias
+                    if dpg.does_item_exist(item_id):
+                        try:
+                            # Try to get the alias if it exists
+                            tag = None
+                            try:
+                                # Get the alias directly - this will return None if no alias exists
+                                tag = dpg.get_item_alias(item_id)
+                            except:
+                                # No alias exists, that's fine
+                                tag = None
+                                
+                            # If we found a mask row tag, add it to deletion list
+                            if tag and tag.startswith("mask_row_"):
+                                rows_to_delete.append(item_id)
+                            elif dpg.get_item_type(item_id) == "mvAppItemType::mvTableRow":
+                                # If it's a table row but doesn't have the expected alias, delete it anyway
+                                rows_to_delete.append(item_id)
+                        except Exception as e:
+                            print(f"Error checking item alias: {e}")
+                            # If there's an error with alias, use a different approach
+                            # Just delete the item directly if it's a table row
+                            if dpg.get_item_type(item_id) == "mvAppItemType::mvTableRow":
+                                rows_to_delete.append(item_id)
+        except Exception as e:
+            print(f"Error identifying rows to delete: {e}")
+            # Fallback: delete all children
+            if dpg.does_item_exist("mask_table"):
+                children = dpg.get_item_children("mask_table", slot=1)
+                if children:
+                    rows_to_delete = children
+        
+        # Now delete all rows
+        for row_id in rows_to_delete:
+            try:
+                if dpg.does_item_exist(row_id):
+                    dpg.delete_item(row_id)
+            except Exception as e:
+                print(f"Error deleting row {row_id}: {e}")
+            
+        # Clear our tracking collections
+        self.mask_checkboxes.clear()
+        self.selected_mask_indices.clear()
+        
+        # Add new rows for each mask
+        for idx, display_name in enumerate(display_names):
+            with dpg.table_row(tag=f"mask_row_{idx}", parent="mask_table"):
+                # Add the selectable item for this row
+                dpg.add_selectable(
+                    label=display_name,
+                    tag=f"mask_selectable_{idx}",
+                    callback=self._create_row_callback(idx),
+                    span_columns=True
+                )
+            
+            # Track the selectable item
+            self.mask_checkboxes[idx] = f"mask_selectable_{idx}"
+        
+        # Update group button label
+        self._update_group_button_label()
     
     def _create_row_callback(self, mask_index: int):
         """Create a proper callback for row selection with correct mask index."""
@@ -1068,13 +2169,17 @@ class MasksPanel(BasePanel):
     
     def _mask_row_clicked(self, sender, app_data, user_data, mask_index: int):
         """Handle row clicks for single and multiple selection."""
+        print(f"MasksPanel: Mask row {mask_index} clicked")
+        
         # Check if masks are enabled first - prevent interaction when disabled
         masks_enabled = UIStateManager.safe_get_value("mask_section_toggle", True)
         if not masks_enabled:
+            print("MasksPanel: Masks are disabled, ignoring click")
             return
         
         # Check if Ctrl is pressed for multiple selection
         is_ctrl_pressed = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+        print(f"MasksPanel: Ctrl pressed: {is_ctrl_pressed}")
         
         if is_ctrl_pressed:
             # Multiple selection mode - toggle this mask's selection
@@ -1128,9 +2233,17 @@ class MasksPanel(BasePanel):
         # Update button label based on selection
         self._update_group_button_label()
         
+        # Disable "Show All Masks" when user manually selects masks
+        if self.selected_mask_indices:
+            UIStateManager.safe_set_value("show_all_masks", False)
+        
         # Update overlay visibility and editing logic
         self._update_mask_overlays_visibility()
         self._apply_editing_logic()
+        
+        # Update brush controls if brush mode is active
+        if UIStateManager.safe_get_value("brush_mode", False):
+            self._update_brush_controls_for_context()
     
     def _apply_editing_logic(self):
         """Apply editing logic based on selection count."""
@@ -1152,6 +2265,11 @@ class MasksPanel(BasePanel):
             if self.mask_editing_enabled:
                 # Switching from mask editing to global editing
                 self._disable_mask_editing()
+                # After disabling mask editing, if no global parameters are saved,
+                # reset to defaults to ensure clean state
+                if not self.global_params:
+                    self._reset_ui_parameters_to_defaults()
+                    self.main_window._update_status("Reset parameters to defaults (no global parameters saved)")
         else:
             # Multiple masks selected - check if they're all in the same group
             if self._are_selected_masks_grouped():
@@ -1213,14 +2331,19 @@ class MasksPanel(BasePanel):
             if combined_mask is not None and self.main_window.app_service.image_service:
                 processor = self.main_window.app_service.image_service.image_processor
                 if processor:
-                    # Enable mask editing with the combined mask
-                    processor.set_mask_editing(True, combined_mask)
+                    # Switch to mask editing mode with the combined mask
+                    processor.switch_to_mask_editing(combined_mask, representative_mask)
                     
                     # Capture base image state for the representative mask
                     self._capture_base_image_state(representative_mask)
                     
                     # Load mask-specific parameters for the representative mask
                     self._load_mask_parameters(representative_mask)
+                    
+                    # If brush mode is active, load the combined mask into the brush tool
+                    if UIStateManager.safe_get_value("brush_mode", False):
+                        self._load_mask_into_brush_tool()
+                        self._update_brush_controls_for_context()
                     
                     # Trigger parameter update to refresh the display
                     if self.callback:
@@ -1268,20 +2391,16 @@ class MasksPanel(BasePanel):
             # Check if this mask has been edited before
             mask_previously_edited = mask_index in self.mask_base_image_states
             is_switching_masks = self.current_mask_index != mask_index
+            coming_from_global = not self.mask_editing_enabled
             
             # Only commit current edits if coming from global editing
             # Don't commit when switching between masks (already handled above)
-            if not self.mask_editing_enabled:
+            if coming_from_global:
                 # Coming from global editing - commit global changes
                 self._commit_current_edits_to_base()
             
-            # CRITICAL FIX: Restore proper base image state BEFORE capturing/editing
-            # If this mask was previously edited, restore its clean base state first
-            if (mask_previously_edited and mask_index in self.mask_base_image_states and 
-                self.main_window.app_service and self.main_window.app_service.image_service):
-                processor = self.main_window.app_service.image_service.image_processor
-                if processor:
-                    processor.base_image = self.mask_base_image_states[mask_index].copy()
+            # With the new processor architecture, base image state management is automatic
+            # The processor handles switching between masks and maintains edit history internally
             
             # Capture base image state before editing this mask (for reset functionality)
             # Only capture if not already captured - this preserves the original clean state
@@ -1301,14 +2420,19 @@ class MasksPanel(BasePanel):
                     if self.main_window.app_service.image_service:
                         processor = self.main_window.app_service.image_service.image_processor
                         if processor and mask is not None:
-                            # Enable mask editing with the selected mask
-                            processor.set_mask_editing(True, mask)
+                            # Switch to mask editing mode with the selected mask
+                            processor.switch_to_mask_editing(mask, mask_index)
                             self.mask_editing_enabled = True
                             self.current_mask_index = mask_index
                             
                             # Load mask-specific parameters (persistent values for readjustment)
                             # This loads the saved UI values so user can continue editing from where they left off
                             self._load_mask_parameters(mask_index)
+                            
+                            # If brush mode is active, load the mask into the brush tool
+                            if UIStateManager.safe_get_value("brush_mode", False):
+                                self._load_mask_into_brush_tool()
+                                self._update_brush_controls_for_context()
                             
                             # Trigger parameter update to refresh the display
                             if self.callback:
@@ -1320,31 +2444,28 @@ class MasksPanel(BasePanel):
     def _capture_base_image_state(self, mask_index: int):
         """Capture the current base image state before editing a mask for the first time."""
         try:
-            # Only capture if we haven't already saved a state for this mask
-            if mask_index in self.mask_base_image_states:
-                return  # Already captured
+            # With the new processor architecture, base image state management is handled automatically
+            # The processor maintains complete edit history and rebuilds from original + all committed edits
+            # We no longer need to manually capture and restore base image states
             
-            # Get the processor
-            if not (self.main_window and self.main_window.app_service and 
-                   self.main_window.app_service.image_service):
-                return
-                
-            processor = self.main_window.app_service.image_service.image_processor
-            if not processor:
-                return
-            
-            # Save the current base image state
-            self.mask_base_image_states[mask_index] = processor.base_image.copy()
+            # Mark that we've "captured" the state for this mask (for compatibility)
+            self.mask_base_image_states[mask_index] = True  # Just a flag now
             
         except Exception as e:
-            print(f"Error capturing base image state for mask {mask_index}: {e}")
+            print(f"Error in base image state capture for mask {mask_index}: {e}")
 
     def get_parameters(self) -> Dict[str, Any]:
         """Get current mask parameters."""
         return {
             'mask_section_toggle': UIStateManager.safe_get_value("mask_section_toggle", True),
             'segmentation_mode': UIStateManager.safe_get_value("segmentation_mode", False),
-            'show_mask_overlay': UIStateManager.safe_get_value("show_mask_overlay", True)
+            'show_mask_overlay': UIStateManager.safe_get_value("show_mask_overlay", True),
+            'show_all_masks': UIStateManager.safe_get_value("show_all_masks", False),
+            'brush_mode': UIStateManager.safe_get_value("brush_mode", False),
+            'brush_size': UIStateManager.safe_get_value("brush_size", 20),
+            'brush_opacity': UIStateManager.safe_get_value("brush_opacity", 1.0),
+            'brush_hardness': UIStateManager.safe_get_value("brush_hardness", 0.8),
+            'eraser_mode': UIStateManager.safe_get_value("eraser_mode", False)
         }
     
     def _toggle_group_selected_masks(self, sender, app_data, user_data):
@@ -1492,46 +2613,6 @@ class MasksPanel(BasePanel):
         """Check if a mask is part of a group."""
         return mask_index in self.mask_to_group
     
-    def _save_group_parameters(self, group_masks: Set[int]):
-        """Save parameters for all masks in a group."""
-        try:
-            current_params = self._get_current_parameters()
-            curves_data = self._get_current_curves_data()
-            
-            # Save the same parameters for all masks in the group
-            for mask_index in group_masks:
-                self.mask_params[mask_index] = {
-                    'parameters': current_params.copy(),
-                    'curves': curves_data
-                }
-            
-        except Exception as e:
-            print(f"Error saving group parameters: {e}")
-    
-    def _update_mask_display_names(self):
-        """Update mask display names to show group information."""
-        if not self.main_window or not hasattr(self.main_window, 'mask_names'):
-            return
-        
-        # Create updated display names that show group information
-        display_names = []
-        for idx in range(len(self.main_window.mask_names)):
-            base_name = self.main_window.mask_names[idx]
-            
-            if idx in self.mask_to_group:
-                group_id = self.mask_to_group[idx]
-                # Extract group number from group_id (e.g., "group_0" -> "0")
-                group_num = group_id.split('_')[-1] if '_' in group_id else group_id
-                display_name = f"[G{group_num}] {base_name}"
-            else:
-                display_name = base_name
-            
-            display_names.append(display_name)
-        
-        # Update the UI if the mask table exists
-        if UIStateManager.safe_item_exists("mask_table"):
-            self._refresh_mask_table_display(display_names)
-    
     def _refresh_mask_table_display(self, display_names: List[str]):
         """Refresh the mask table display with updated names."""
         try:
@@ -1606,8 +2687,9 @@ class MasksPanel(BasePanel):
                 
                 if masks:
                     # Use update_mask_overlays which properly creates and displays all masks
+                    # Pass auto_show_first=True when re-enabling masks to show existing masks
                     self.main_window.mask_overlay_renderer.update_mask_overlays(
-                        masks, self.main_window.crop_rotate_ui
+                        masks, self.main_window.crop_rotate_ui, auto_show_first=True
                     )
         else:
             # Fallback to old system if renderer not available
@@ -1629,3 +2711,328 @@ class MasksPanel(BasePanel):
             UIStateManager.safe_configure_item("segmentation_loading_group", show=False)
         except Exception as e:
             print(f"Error hiding segmentation loading indicator: {e}")
+    
+    def cleanup_performance_optimizations(self):
+        """Clean up performance optimization resources."""
+        if self.segmentation_task and not self.segmentation_task.done():
+            self.segmentation_task.cancel()
+        self.executor.shutdown(wait=False)
+        self.mask_processing_active = False
+
+    def __del__(self):
+        """Ensure cleanup when object is destroyed."""
+        try:
+            self.cleanup_performance_optimizations()
+        except:
+            pass  # Ignore errors during cleanup
+    
+    def _toggle_show_all_masks(self, sender, app_data, user_data):
+        """Toggle showing all masks without grouping."""
+        show_all = UIStateManager.safe_get_value("show_all_masks", False)
+        
+        if not self.main_window or not self.main_window.app_service:
+            return
+        
+        # Check if masks are enabled first
+        masks_enabled = UIStateManager.safe_get_value("mask_section_toggle", True)
+        if not masks_enabled:
+            self.main_window._update_status("Cannot show all masks - masks are disabled")
+            # Reset the checkbox if masks are disabled
+            UIStateManager.safe_set_value("show_all_masks", False)
+            return
+        
+        # Check if mask overlay is enabled
+        show_overlay = UIStateManager.safe_get_value("show_mask_overlay", True)
+        if not show_overlay:
+            self.main_window._update_status("Cannot show all masks - mask overlay is disabled")
+            # Reset the checkbox if overlay is disabled
+            UIStateManager.safe_set_value("show_all_masks", False)
+            return
+        
+        # Don't show overlays if crop mode is active
+        if (UIStateManager.safe_item_exists("crop_mode") and 
+            UIStateManager.safe_get_value("crop_mode", False)):
+            self.main_window._update_status("Cannot show all masks - crop mode is active")
+            # Reset the checkbox if crop mode is active
+            UIStateManager.safe_set_value("show_all_masks", False)
+            return
+        
+        masks = self.main_window.app_service.get_mask_service().get_masks()
+        
+        if show_all and masks:
+            # Show all masks without grouping
+            if hasattr(self.main_window, 'mask_overlay_renderer') and self.main_window.mask_overlay_renderer:
+                # Create list of all mask indices
+                all_indices = list(range(len(masks)))
+                self.main_window.mask_overlay_renderer.show_selected_masks(all_indices, len(masks))
+                
+                # Clear any current selection to avoid conflicts
+                self._clear_all_mask_selections()
+                
+                self.main_window._update_status(f"Showing all {len(masks)} masks without grouping")
+            else:
+                # Fallback to old system
+                all_indices = list(range(len(masks)))
+                MaskOverlayManager.show_selected_overlays(all_indices)
+                self.main_window._update_status(f"Showing all {len(masks)} masks (fallback mode)")
+        else:
+            # Hide all masks when disabling "Show All"
+            if hasattr(self.main_window, 'mask_overlay_renderer') and self.main_window.mask_overlay_renderer:
+                self.main_window.mask_overlay_renderer.show_selected_mask(-1, len(masks))
+            else:
+                MaskOverlayManager.hide_all_overlays(len(masks))
+            
+            self.main_window._update_status("All mask overlays hidden")
+    
+    def _load_mask_into_brush_tool(self):
+        """Load the currently selected mask into the brush tool for editing."""
+        if not self.mask_editing_enabled or self.current_mask_index < 0:
+            return
+            
+        try:
+            # Get the selected mask data
+            if self.main_window and self.main_window.app_service:
+                mask_service = self.main_window.app_service.get_mask_service()
+                masks = mask_service.get_masks()
+                
+                if 0 <= self.current_mask_index < len(masks):
+                    mask_data = masks[self.current_mask_index]
+                    mask = mask_data.get("segmentation")
+                    
+                    if mask is not None and self.main_window.brush_renderer:
+                        # Convert boolean mask to uint8 format for brush renderer
+                        if mask.dtype == bool:
+                            brush_mask = (mask.astype(np.uint8) * 255)
+                        else:
+                            brush_mask = mask.astype(np.uint8)
+                        
+                        # Convert mask to texture coordinates if needed
+                        if hasattr(self.main_window, 'crop_rotate_ui') and self.main_window.crop_rotate_ui:
+                            # Get current transformation parameters
+                            rotation_angle = 0
+                            if UIStateManager.safe_item_exists("rotation_slider"):
+                                rotation_angle = UIStateManager.safe_get_value("rotation_slider", 0)
+                            
+                            flip_states = self.main_window.crop_rotate_ui.get_flip_states()
+                            flip_horizontal = flip_states.get('flip_horizontal', False)
+                            flip_vertical = flip_states.get('flip_vertical', False)
+                            
+                            # Transform mask to texture coordinates
+                            texture_mask = self._transform_mask_to_texture_coords(
+                                brush_mask, rotation_angle, flip_horizontal, flip_vertical
+                            )
+                            
+                            # Load the mask into the brush renderer
+                            self.main_window.brush_renderer.set_mask(texture_mask)
+                        else:
+                            # Direct loading without transformation
+                            self.main_window.brush_renderer.set_mask(brush_mask)
+                        
+                        # Update brush display
+                        if hasattr(self.main_window, 'update_brush_display'):
+                            self.main_window.update_brush_display()
+                        
+                        self.main_window._update_status(f"✓ Loaded mask {self.current_mask_index + 1} for brush editing")
+                    
+        except Exception as e:
+            print(f"Error loading mask into brush tool: {e}")
+            self.main_window._update_status(f"✗ Failed to load mask for editing: {str(e)}")
+
+    def _transform_mask_to_texture_coords(self, mask: np.ndarray, rotation_angle: float, 
+                                        flip_horizontal: bool, flip_vertical: bool) -> np.ndarray:
+        """Transform a mask from image coordinates to texture coordinates."""
+        if not hasattr(self.main_window, 'crop_rotate_ui'):
+            return mask
+            
+        crop_rotate_ui = self.main_window.crop_rotate_ui
+        
+        # Start with the original mask
+        result_mask = mask.copy()
+        
+        # Apply transformations in the same order as the image
+        if flip_vertical:
+            result_mask = cv2.flip(result_mask, 0)
+            
+        if flip_horizontal:
+            result_mask = cv2.flip(result_mask, 1)
+        
+        # Apply rotation if needed
+        if abs(rotation_angle) > 0.01:
+            h, w = result_mask.shape[:2]
+            center = (w / 2, h / 2)
+            rotation_matrix = cv2.getRotationMatrix2D(center, rotation_angle, 1.0)
+            
+            # Calculate new dimensions after rotation
+            cos_angle = abs(rotation_matrix[0, 0])
+            sin_angle = abs(rotation_matrix[0, 1])
+            new_w = int((h * sin_angle) + (w * cos_angle))
+            new_h = int((h * cos_angle) + (w * sin_angle))
+            
+            # Adjust rotation matrix for new center
+            rotation_matrix[0, 2] += (new_w / 2) - center[0]
+            rotation_matrix[1, 2] += (new_h / 2) - center[1]
+            
+            result_mask = cv2.warpAffine(result_mask, rotation_matrix, (new_w, new_h),
+                                       flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        
+        # Resize and position the mask in the texture
+        texture_h = crop_rotate_ui.texture_h
+        texture_w = crop_rotate_ui.texture_w
+        
+        # Create texture-sized mask
+        texture_mask = np.zeros((texture_h, texture_w), dtype=np.uint8)
+        
+        # Calculate positioning in texture
+        mask_h, mask_w = result_mask.shape[:2]
+        offset_x = (texture_w - mask_w) // 2
+        offset_y = (texture_h - mask_h) // 2
+        
+        # Ensure we don't go out of bounds
+        if offset_x >= 0 and offset_y >= 0 and offset_x + mask_w <= texture_w and offset_y + mask_h <= texture_h:
+            texture_mask[offset_y:offset_y + mask_h, offset_x:offset_x + mask_w] = result_mask
+        else:
+            # If mask doesn't fit, resize it
+            scale_x = texture_w / mask_w
+            scale_y = texture_h / mask_h
+            scale = min(scale_x, scale_y, 1.0)  # Don't upscale
+            
+            new_w = int(mask_w * scale)
+            new_h = int(mask_h * scale)
+            
+            if new_w > 0 and new_h > 0:
+                resized_mask = cv2.resize(result_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+                offset_x = (texture_w - new_w) // 2
+                offset_y = (texture_h - new_h) // 2
+                texture_mask[offset_y:offset_y + new_h, offset_x:offset_x + new_w] = resized_mask
+        
+        return texture_mask
+
+    def _update_brush_controls_for_context(self):
+        """Update brush controls based on whether we're editing an existing mask or creating a new one."""
+        brush_mode_active = UIStateManager.safe_get_value("brush_mode", False)
+        
+        if not brush_mode_active:
+            # Hide mask editing controls when brush mode is off
+            UIStateManager.safe_configure_item("brush_mask_edit_controls", show=False)
+            return
+        
+        # Show appropriate controls based on context
+        is_editing_mask = self.mask_editing_enabled and self.current_mask_index >= 0
+        
+        if is_editing_mask:
+            # Show mask editing controls, hide new mask creation controls
+            UIStateManager.safe_configure_item("brush_mask_edit_controls", show=True)
+            UIStateManager.safe_configure_item("add_brush_btn", show=False)
+            UIStateManager.safe_configure_item("clear_brush_creation_btn", show=False)
+                
+            # Show status message for brush editing mode
+            if self.main_window:
+                mask_name = f"mask {self.current_mask_index + 1}"
+                if self.main_window.app_service:
+                    mask_service = self.main_window.app_service.get_mask_service()
+                    mask_names = mask_service.get_mask_names()
+                    if 0 <= self.current_mask_index < len(mask_names):
+                        mask_name = mask_names[self.current_mask_index]
+                self.main_window._update_status(f"🖌️ Brush editing {mask_name} - Paint to add, hold Eraser mode to remove")
+        else:
+            # Show new mask creation controls, hide mask editing controls
+            UIStateManager.safe_configure_item("brush_mask_edit_controls", show=False)
+            UIStateManager.safe_configure_item("add_brush_btn", show=True)
+            UIStateManager.safe_configure_item("clear_brush_creation_btn", show=True)
+                
+            # Show status message for brush creation mode
+            if self.main_window:
+                self.main_window._update_status("🖌️ Brush creation mode - Paint to create new mask")
+
+    def _update_selected_mask_with_brush(self, sender, app_data, user_data):
+        """Update the currently selected mask with the brush tool content."""
+        if not self.mask_editing_enabled or self.current_mask_index < 0:
+            self.main_window._update_status("✗ No mask selected for updating")
+            return
+        
+        if not self.main_window.brush_renderer:
+            self.main_window._update_status("✗ Brush renderer not available")
+            return
+        
+        try:
+            # Get current transformation parameters
+            rotation_angle = 0
+            if UIStateManager.safe_item_exists("rotation_slider"):
+                rotation_angle = UIStateManager.safe_get_value("rotation_slider", 0)
+            
+            flip_states = self.main_window.crop_rotate_ui.get_flip_states()
+            flip_horizontal = flip_states.get('flip_horizontal', False)
+            flip_vertical = flip_states.get('flip_vertical', False)
+            
+            # Get the brush mask in image coordinates
+            if hasattr(self.main_window.crop_rotate_ui, 'orig_w') and hasattr(self.main_window.crop_rotate_ui, 'orig_h'):
+                # Get current image dimensions for extraction
+                if abs(rotation_angle) > 0.01:
+                    # Use rotated dimensions if image is rotated
+                    extract_width = getattr(self.main_window.crop_rotate_ui, 'rot_w', self.main_window.crop_rotate_ui.orig_w)
+                    extract_height = getattr(self.main_window.crop_rotate_ui, 'rot_h', self.main_window.crop_rotate_ui.orig_h)
+                else:
+                    extract_width = self.main_window.crop_rotate_ui.orig_w
+                    extract_height = self.main_window.crop_rotate_ui.orig_h
+                
+                extract_offset_x = self.main_window.crop_rotate_ui.offset_x
+                extract_offset_y = self.main_window.crop_rotate_ui.offset_y
+                
+                # Get the transformed mask
+                updated_mask = self.main_window.brush_renderer.get_mask_for_image_coords_with_transforms(
+                    extract_width, extract_height,
+                    extract_offset_x, extract_offset_y,
+                    rotation_angle, flip_horizontal, flip_vertical,
+                    target_width=self.main_window.crop_rotate_ui.orig_w,
+                    target_height=self.main_window.crop_rotate_ui.orig_h
+                )
+                
+                # Convert to boolean mask
+                boolean_mask = (updated_mask > 127).astype(bool)
+                
+                # Update the mask in the service
+                mask_service = self.main_window.app_service.get_mask_service()
+                masks = mask_service.get_masks()
+                
+                if 0 <= self.current_mask_index < len(masks):
+                    # Update the mask data
+                    masks[self.current_mask_index]['segmentation'] = boolean_mask
+                    masks[self.current_mask_index]['area'] = np.sum(boolean_mask)
+                    
+                    # Calculate new bounding box
+                    if hasattr(self.main_window, '_calculate_mask_bbox'):
+                        masks[self.current_mask_index]['bbox'] = self.main_window._calculate_mask_bbox(updated_mask)
+                    
+                    # Update the mask service
+                    mask_service.replace_all_masks(masks, mask_service.get_mask_names())
+                    
+                    # Update UI
+                    self.update_masks(masks, mask_service.get_mask_names())
+                    
+                    # Update mask overlays
+                    if hasattr(self.main_window, 'update_mask_overlays'):
+                        self.main_window.update_mask_overlays(masks, auto_show_first=False)
+                    
+                    # Update the image processor with the new mask
+                    if (self.main_window.app_service.image_service and 
+                        self.main_window.app_service.image_service.image_processor):
+                        processor = self.main_window.app_service.image_service.image_processor
+                        processor.switch_to_mask_editing(boolean_mask, self.current_mask_index)
+                    
+                    self.main_window._update_status(f"✓ Updated mask {self.current_mask_index + 1} with brush edits")
+                    
+                    # Trigger parameter update to refresh the display
+                    if self.callback:
+                        self.callback(None, None, None)
+                else:
+                    self.main_window._update_status("✗ Invalid mask index")
+            else:
+                self.main_window._update_status("✗ Image dimensions not available")
+                
+        except Exception as e:
+            print(f"Error updating mask with brush: {e}")
+            import traceback
+            traceback.print_exc()
+            self.main_window._update_status(f"✗ Failed to update mask: {str(e)}")
+
+

@@ -4,503 +4,12 @@ Centralizes business logic and coordinates between different subsystems.
 """
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
-import traceback
 
-from utils.memory_utils import MemoryManager, ErrorHandler, ResourceManager
-from ui.segmentation import ImageSegmenter
-from processing.file_manager import load_image
-
-class ImageService:
-    """Service for managing image operations and state."""
-    
-    def __init__(self):
-        self.current_image: Optional[np.ndarray] = None
-        self.current_image_path: Optional[str] = None
-        self.image_processor = None
-        self.crop_rotate_ui = None
-    
-    def load_image(self, file_path: str) -> Optional[np.ndarray]:
-        """Load an image from file."""
-        try:
-            image = load_image(file_path)
-            self.current_image = image
-            self.current_image_path = file_path
-            
-            # Clear GPU memory before loading new image
-            MemoryManager.clear_cuda_cache()
-            
-            return image
-        except Exception as e:
-            error_msg = ErrorHandler.handle_memory_error(e, "image loading")
-            print(error_msg)
-            return None
-    
-    def create_image_processor(self, image: np.ndarray):
-        """Create an image processor for the given image."""
-        from processing.image_processor import ImageProcessor
-        self.image_processor = ImageProcessor(image.copy())
-        return self.image_processor
-    
-    def create_crop_rotate_ui(self, image: np.ndarray, processor):
-        """Create crop/rotate UI for the given image."""
-        from ui.crop_rotate import CropRotateUI
-        self.crop_rotate_ui = CropRotateUI(image, processor)
-        return self.crop_rotate_ui
-    
-    def get_current_image(self) -> Optional[np.ndarray]:
-        """Get the current loaded image."""
-        return self.current_image
-    
-    def get_current_path(self) -> Optional[str]:
-        """Get the path of the current image."""
-        return self.current_image_path
-    
-    def get_processed_image(self) -> Optional[np.ndarray]:
-        """Get the processed image from the image processor."""
-        if self.image_processor:
-            # ImageProcessor uses apply_all_edits() to get the processed image
-            if hasattr(self.image_processor, 'apply_all_edits'):
-                return self.image_processor.apply_all_edits()
-            elif hasattr(self.image_processor, 'get_processed_image'):
-                return self.image_processor.get_processed_image()
-            elif hasattr(self.image_processor, 'current'):
-                return self.image_processor.current
-        elif self.current_image is not None:
-            # Return the current image if no processor is available
-            return self.current_image
-        return None
-
-class MaskService:
-    """Service for managing mask operations and state."""
-    
-    def __init__(self):
-        self.layer_masks: List[Dict[str, Any]] = []
-        self.mask_names: List[str] = []
-        self.mask_editing_enabled = False
-        self.current_mask_index = -1
-        self.mask_parameters: Dict[int, Dict[str, Any]] = {}
-        self.global_parameters: Optional[Dict[str, Any]] = None
-    
-    def add_masks(self, masks: List[Dict[str, Any]], names: Optional[List[str]] = None) -> None:
-        """Add new masks to the collection."""
-        start_index = len(self.layer_masks)
-        self.layer_masks.extend(masks)
-        
-        # Add names for new masks
-        if names and len(names) >= len(masks):
-            self.mask_names.extend(names[:len(masks)])
-        else:
-            for idx in range(len(masks)):
-                self.mask_names.append(f"Mask {start_index + idx + 1}")
-    
-    def replace_all_masks(self, masks: List[Dict[str, Any]], names: Optional[List[str]] = None) -> None:
-        """Replace all existing masks with new ones."""
-        self.layer_masks = masks
-        
-        if names and len(names) >= len(masks):
-            self.mask_names = names[:len(masks)]
-        else:
-            self.mask_names = [f"Mask {idx + 1}" for idx in range(len(masks))]
-    
-    def clear_all_masks(self) -> None:
-        """Clear all masks."""
-        self.layer_masks.clear()
-        self.mask_names.clear()
-        self.mask_parameters.clear()
-        self.mask_editing_enabled = False
-        self.current_mask_index = -1
-    
-    def delete_mask(self, mask_index: int) -> bool:
-        """Delete a specific mask."""
-        if 0 <= mask_index < len(self.layer_masks):
-            self.layer_masks.pop(mask_index)
-            if mask_index < len(self.mask_names):
-                self.mask_names.pop(mask_index)
-            
-            # Remove parameters for this mask
-            if mask_index in self.mask_parameters:
-                del self.mask_parameters[mask_index]
-            
-            # Adjust parameter indices for masks after the deleted one
-            new_params = {}
-            for idx, params in self.mask_parameters.items():
-                if idx > mask_index:
-                    new_params[idx - 1] = params
-                elif idx < mask_index:
-                    new_params[idx] = params
-            self.mask_parameters = new_params
-            
-            # Adjust current mask index
-            if self.current_mask_index == mask_index:
-                self.current_mask_index = -1
-                self.mask_editing_enabled = False
-            elif self.current_mask_index > mask_index:
-                self.current_mask_index -= 1
-            
-            return True
-        return False
-    
-    def rename_mask(self, mask_index: int, new_name: str) -> bool:
-        """Rename a specific mask."""
-        if 0 <= mask_index < len(self.mask_names):
-            self.mask_names[mask_index] = new_name
-            return True
-        return False
-    
-    def enable_mask_editing(self, mask_index: int, global_params: Dict[str, Any]) -> bool:
-        """Enable editing for a specific mask."""
-        if 0 <= mask_index < len(self.layer_masks):
-            # Save global parameters if not already saved
-            if not self.mask_editing_enabled:
-                self.global_parameters = global_params.copy()
-            
-            # Save current mask parameters if switching masks
-            if self.mask_editing_enabled and self.current_mask_index != mask_index:
-                self.save_mask_parameters(self.current_mask_index, global_params)
-            
-            self.mask_editing_enabled = True
-            self.current_mask_index = mask_index
-            return True
-        return False
-    
-    def disable_mask_editing(self, current_params: Dict[str, Any]) -> Dict[str, Any]:
-        """Disable mask editing and return global parameters."""
-        if self.mask_editing_enabled and self.current_mask_index >= 0:
-            # Save current mask parameters
-            self.save_mask_parameters(self.current_mask_index, current_params)
-        
-        self.mask_editing_enabled = False
-        self.current_mask_index = -1
-        
-        # Return global parameters or current params if no global saved
-        return self.global_parameters if self.global_parameters else current_params
-    
-    def save_mask_parameters(self, mask_index: int, parameters: Dict[str, Any]) -> None:
-        """Save parameters for a specific mask."""
-        if 0 <= mask_index < len(self.layer_masks):
-            self.mask_parameters[mask_index] = parameters.copy()
-    
-    def load_mask_parameters(self, mask_index: int) -> Optional[Dict[str, Any]]:
-        """Load parameters for a specific mask."""
-        return self.mask_parameters.get(mask_index)
-    
-    def get_mask_count(self) -> int:
-        """Get the number of masks."""
-        return len(self.layer_masks)
-    
-    def get_masks(self) -> List[Dict[str, Any]]:
-        """Get all masks."""
-        return self.layer_masks
-    
-    def get_mask_names(self) -> List[str]:
-        """Get all mask names."""
-        return self.mask_names
-
-
-class SegmentationService:
-    """Service for managing segmentation operations."""
-    
-    def __init__(self, main_window=None):
-        self.segmenter = None
-        self.resource_manager = ResourceManager()
-        self.segmentation_mode = False
-        self.pending_selection = None
-        self.main_window = main_window
-    
-    def get_segmenter(self):
-        """Get or create segmenter instance with memory-efficient approach."""
-        if self.segmenter is None:
-            try:  
-                # Check available memory first
-                memory_info = MemoryManager.get_device_info()
-                device = MemoryManager.select_optimal_device(min_gpu_memory_gb=4.0)
-                
-                # If GPU doesn't have enough memory, force CPU mode
-                if device == "cuda" and memory_info['free_mb'] < 3000:  # 3GB threshold
-                    device = "cpu"
-                
-                self.main_window._update_status(f"Selected device to apply segmentation: {device}")
-                
-                # Clear memory before creating segmenter
-                MemoryManager.clear_cuda_cache()
-                
-                self.segmenter = ImageSegmenter(device=device)
-                
-                # Register with resource manager
-                self.resource_manager.register_model(
-                    "sam_segmenter", 
-                    self.segmenter.model, 
-                    device
-                )
-                
-            except Exception as e:
-                error_msg = ErrorHandler.handle_memory_error(e, "segmenter creation")
-                print(error_msg)
-                
-                # Try fallback to CPU if GPU failed
-                try:
-                    MemoryManager.clear_cuda_cache()
-                    self.segmenter = ImageSegmenter(device="cpu")
-                    self.main_window._update_status("ImageSegmenter created successfully on CPU as fallback")
-                except Exception as cpu_e:
-                    print(f"CPU fallback also failed: {cpu_e}")
-                    return None
-        
-        return self.segmenter
-    
-    def segment_image(self, image: np.ndarray) -> List[Dict[str, Any]]:
-        """Perform automatic segmentation on an image."""
-        segmenter = self.get_segmenter()
-        if segmenter is None:
-            return []
-        
-        try:
-            # Clean up memory before segmentation
-            self.cleanup_memory()
-            
-            return ErrorHandler.safe_gpu_operation(
-                operation=lambda: segmenter.segment(image),
-                fallback_operation=lambda: self._fallback_segment(image),
-                operation_name="automatic segmentation"
-            )
-        except Exception as e:
-            error_msg = ErrorHandler.handle_memory_error(e, "automatic segmentation")
-            print(error_msg)
-            return []
-    
-    def segment_with_box(self, image: np.ndarray, box: List[int]) -> List[Dict[str, Any]]:
-        """Perform box-guided segmentation on an image."""
-        segmenter = self.get_segmenter()
-        if segmenter is None:
-            return []
-        
-        try:
-            # Clean up memory before segmentation
-            self.cleanup_memory()
-            
-            return ErrorHandler.safe_gpu_operation(
-                operation=lambda: segmenter.segment_with_box(image, box),
-                fallback_operation=lambda: self._fallback_segment_with_box(image, box),
-                operation_name="box segmentation"
-            )
-        except Exception as e:
-            error_msg = ErrorHandler.handle_memory_error(e, "box segmentation")
-            print(error_msg)
-            return []
-    
-    def _fallback_segment(self, image: np.ndarray) -> List[Dict[str, Any]]:
-        """Fallback segmentation method."""
-        if self.segmenter and hasattr(self.segmenter, '_fallback_segment'):
-            return self.segmenter._fallback_segment(image)
-        return []
-    
-    def _fallback_segment_with_box(self, image: np.ndarray, box: List[int]) -> List[Dict[str, Any]]:
-        """Fallback box segmentation method."""
-        if self.segmenter and hasattr(self.segmenter, '_fallback_segment_with_box'):
-            return self.segmenter._fallback_segment_with_box(image, box)
-        return []
-    
-    def cleanup_memory(self) -> None:
-        """Clean up segmentation memory."""
-        if self.segmenter and hasattr(self.segmenter, 'cleanup_memory'):
-            self.segmenter.cleanup_memory()
-        
-        self.resource_manager.move_to_cpu_if_needed("sam_segmenter")
-        MemoryManager.clear_cuda_cache()
-    
-    def reset_segmenter(self) -> None:
-        """Reset the segmenter instance."""
-        if self.segmenter:
-            self.cleanup_memory()
-            self.segmenter = None
-    
-    def enable_segmentation_mode(self) -> bool:
-        """Enable segmentation mode."""
-        self.segmentation_mode = True
-        self.pending_selection = None
-        return True
-    
-    def disable_segmentation_mode(self) -> None:
-        """Disable segmentation mode."""
-        self.segmentation_mode = False
-        self.pending_selection = None
-    
-    def set_pending_selection(self, selection: Dict[str, Any]) -> None:
-        """Set pending segmentation selection."""
-        self.pending_selection = selection
-    
-    def get_pending_selection(self) -> Optional[Dict[str, Any]]:
-        """Get pending segmentation selection."""
-        return self.pending_selection
-    
-    def validate_segmentation_requirements(self, crop_rotate_ui=None) -> bool:
-        """Validate that segmentation requirements are met."""
-        if not crop_rotate_ui or not hasattr(crop_rotate_ui, "original_image"):
-            return False
-            
-        return True
-    
-    def transform_texture_coordinates_to_image(self, box, crop_rotate_ui):
-        """Transform texture coordinates to image coordinates, accounting for flips."""
-        try:
-            if not crop_rotate_ui or crop_rotate_ui.original_image is None:
-                return None
-                
-            image = crop_rotate_ui.original_image
-            h, w = image.shape[:2]
-            
-            # Calculate the texture offsets where the image is centered within the texture
-            texture_w = crop_rotate_ui.texture_w
-            texture_h = crop_rotate_ui.texture_h
-            offset_x = (texture_w - w) // 2
-            offset_y = (texture_h - h) // 2
-            
-            # Get flip states
-            flip_horizontal = False
-            flip_vertical = False
-            if hasattr(crop_rotate_ui, 'get_flip_states'):
-                flip_states = crop_rotate_ui.get_flip_states()
-                flip_horizontal = flip_states.get('flip_horizontal', False)
-                flip_vertical = flip_states.get('flip_vertical', False)
-            
-            # Convert all box coordinates to Python scalars first
-            box_scalars = []
-            for i, coord in enumerate(box):
-                try:
-                    if hasattr(coord, 'item'):  # numpy scalar
-                        scalar_val = coord.item()
-                    else:
-                        scalar_val = float(coord)
-                    box_scalars.append(scalar_val)
-                except Exception as e:
-                    print(f"DEBUG: Error converting box[{i}] = {coord}: {e}")
-                    return None
-            
-            # Convert box coordinates from texture space to image space
-            x1 = max(0, min(w-1, int(box_scalars[0] - offset_x)))
-            y1 = max(0, min(h-1, int(box_scalars[1] - offset_y)))
-            x2 = max(0, min(w-1, int(box_scalars[2] - offset_x)))
-            y2 = max(0, min(h-1, int(box_scalars[3] - offset_y)))
-            
-            # Apply flip transformations to the box coordinates
-            if flip_horizontal:
-                # Flip X coordinates: x_new = image_width - x_old
-                x1_flipped = w - 1 - x2  # Right becomes left
-                x2_flipped = w - 1 - x1  # Left becomes right
-                x1, x2 = x1_flipped, x2_flipped
-            
-            if flip_vertical:
-                # Flip Y coordinates: y_new = image_height - y_old
-                y1_flipped = h - 1 - y2  # Bottom becomes top
-                y2_flipped = h - 1 - y1  # Top becomes bottom
-                y1, y2 = y1_flipped, y2_flipped
-            
-            # Ensure coordinates are in correct order (x1 < x2, y1 < y2)
-            if x1 > x2:
-                x1, x2 = x2, x1
-            if y1 > y2:
-                y1, y2 = y2, y1
-            
-            scaled_box = [x1, y1, x2, y2]
-            
-            # Ensure all coordinates are integers (not numpy types)
-            scaled_box = [int(coord) for coord in scaled_box]
-            
-            # Validate box dimensions
-            if scaled_box[2] <= scaled_box[0] or scaled_box[3] <= scaled_box[1]:
-                # Try to create a minimal valid box
-                center_x = (scaled_box[0] + scaled_box[2]) // 2
-                center_y = (scaled_box[1] + scaled_box[3]) // 2
-                min_size = 10
-                scaled_box = [
-                    max(0, center_x - min_size//2),
-                    max(0, center_y - min_size//2),
-                    min(w, center_x + min_size//2),
-                    min(h, center_y + min_size//2)
-                ]
-
-            return scaled_box
-            
-        except Exception as e:
-            print(f"DEBUG: Exception in transform_texture_coordinates_to_image: {e}")
-            traceback.print_exc()
-            return None
-    
-    def create_default_bounding_box(self, crop_rotate_ui):
-        """Create a default bounding box as fallback."""
-        if not crop_rotate_ui or crop_rotate_ui.original_image is None:
-            return None
-            
-        h, w = crop_rotate_ui.original_image.shape[:2]
-        offset_x = (crop_rotate_ui.texture_w - w) // 2
-        offset_y = (crop_rotate_ui.texture_h - h) // 2
-        
-        # Create a box in the center that's 80% of the image size
-        box_w = int(w * 0.8)
-        box_h = int(h * 0.8)
-        box_x = offset_x + (w - box_w) // 2
-        box_y = offset_y + (h - box_h) // 2
-        
-        return {
-            "x": box_x,
-            "y": box_y,
-            "w": box_w,
-            "h": box_h
-        }
-    
-    def confirm_segmentation_selection(self, pending_box, crop_rotate_ui, app_service):
-        """Confirm segmentation selection and perform segmentation."""        
-        if not self.segmentation_mode:
-            return False, "Segmentation mode is not active"
-            
-        if not pending_box:
-            # Try to create a default box
-            pending_box = self.create_default_bounding_box(crop_rotate_ui)
-            if not pending_box:
-                return False, "No area selected and could not create default selection"
-        
-        # Validate box dimensions
-        if pending_box["w"] < 10 or pending_box["h"] < 10:
-            return False, f"Selection area too small: {pending_box['w']}x{pending_box['h']} (minimum 10x10)"
-        
-        # Box format: [x1, y1, x2, y2]
-        box = [pending_box["x"], pending_box["y"], 
-               pending_box["x"] + pending_box["w"], 
-               pending_box["y"] + pending_box["h"]]
-        
-        # Transform coordinates
-        scaled_box = self.transform_texture_coordinates_to_image(box, crop_rotate_ui)
-        if not scaled_box:
-            return False, "Could not transform coordinates"
-        
-        # Validate transformed box
-        try:
-            # Ensure all coordinates are scalar values and finite
-            for i, coord in enumerate(scaled_box):
-                if not isinstance(coord, (int, float, np.integer, np.floating)):
-                    return False, f"Invalid coordinate type: {type(coord)}"
-                # Convert numpy scalars to Python scalars for safe comparison
-                coord_val = float(coord) if hasattr(coord, 'item') else coord
-                if not np.isfinite(coord_val):
-                    return False, f"Non-finite coordinate: {coord_val}"
-        except Exception as e:
-            return False, f"Coordinate validation error: {str(e)}"
-        
-        try:
-            if scaled_box[2] - scaled_box[0] < 10 or scaled_box[3] - scaled_box[1] < 10:
-                return False, "Selection too small relative to image"
-        except Exception as e:
-            return False, f"Box size validation error: {str(e)}"
-        
-        # Perform segmentation
-        try:
-            masks, mask_names = app_service.perform_box_segmentation(scaled_box)
-            if not masks or len(masks) == 0:
-                return False, "No objects found in selection"
-            
-            return True, f"Created {len(masks)} total masks"
-        except Exception as e:
-            return False, f"Error: {str(e)}"
+from utils.memory_utils import MemoryManager
+from core.services.image_service import ImageService
+from core.services.mask_service import MaskService
+from core.services.segmentation_service import SegmentationService
+from core.services.generative_service import GenerativeService
 
 
 class ApplicationService:
@@ -510,6 +19,7 @@ class ApplicationService:
         self.image_service = ImageService()
         self.mask_service = MaskService()
         self._segmentation_service = None  # Lazy-loaded to avoid auto-initialization
+        self._generative_service = None
         self.ui_state = {}
         self.main_window = None
     
@@ -519,6 +29,29 @@ class ApplicationService:
         if self._segmentation_service is None:
             self._segmentation_service = SegmentationService(self.main_window)
         return self._segmentation_service
+    
+    @property
+    def generative_service(self):
+        """Lazy-load generative service for image synthesis."""
+        if self._generative_service is None:
+            # Use local inpainting model checkpoint
+            import os
+            from pathlib import Path
+            
+            # Get the absolute path to the local model
+            project_root = Path(__file__).parent.parent
+            local_model_path = project_root / "assets" / "models" / "512-inpainting-ema.ckpt"
+            
+            if local_model_path.exists():
+                inpainting_model = str(local_model_path)
+                print(f"Using local inpainting model: {inpainting_model}")
+            else:
+                # Fallback to HuggingFace model if local not found
+                inpainting_model = "runwayml/stable-diffusion-inpainting"
+                print(f"Local model not found, using HuggingFace model: {inpainting_model}")
+            
+            self._generative_service = GenerativeService(model_path=inpainting_model)
+        return self._generative_service
     
     def load_image(self, file_path: str, create_ui_components: bool = False) -> Optional[np.ndarray]:
         """Load an image and optionally set up UI components."""
@@ -586,20 +119,282 @@ class ApplicationService:
         return self.mask_service.get_masks(), self.mask_service.get_mask_names()
     
     def delete_mask(self, mask_index: int) -> bool:
-        """Delete a mask."""
+        """Delete a mask and restore pre-inpainting state if applicable."""
+        # Check if this mask has a pre-inpainting state that needs restoration
+        if (self.mask_service.get_pre_inpainting_state(mask_index) is not None and 
+            self.image_service.image_processor):
+            
+            # Restore the image processor to its pre-inpainting state
+            restored = self.mask_service.restore_pre_inpainting_state(
+                mask_index, self.image_service.image_processor
+            )
+            
+            if restored:
+                # CRITICAL: After restoration, we need to reprocess the image with remaining edits
+                processor = self.image_service.image_processor
+                
+                # Apply all remaining edits to get the current processed state
+                processed_image = processor.apply_all_edits()
+                if processed_image is not None:
+                    # Update the current image in the service
+                    self.image_service.current_image = processed_image.copy()
+                    
+                    # Update crop/rotate UI with the properly processed image
+                    if hasattr(self.image_service, 'crop_rotate_ui') and self.image_service.crop_rotate_ui:
+                        self.image_service.crop_rotate_ui.original_image = processed_image.copy()
+                        # Force texture update by calling update_image
+                        self.image_service.crop_rotate_ui.update_image(None, None, None)
+                    # Also update main window's crop rotate UI if different
+                    elif self.main_window and hasattr(self.main_window, 'crop_rotate_ui') and self.main_window.crop_rotate_ui:
+                        self.main_window.crop_rotate_ui.original_image = processed_image.copy()
+                        # Force texture update by calling update_image
+                        self.main_window.crop_rotate_ui.update_image(None, None, None)
+                
+                print(f"Restored and updated visual state for deleted mask {mask_index}")
+        
+        # Delete the mask (this also cleans up files and tracking)
         return self.mask_service.delete_mask(mask_index)
     
     def rename_mask(self, mask_index: int, new_name: str) -> bool:
         """Rename a mask."""
         return self.mask_service.rename_mask(mask_index, new_name)
     
-    def clear_all_masks(self) -> None:
-        """Clear all masks."""
-        self.mask_service.clear_all_masks()
+    def reimagine_mask(self, mask_index: int, prompt: str, negative_prompt: str = "", **generate_kwargs) -> Optional[np.ndarray]:
+        """Regenerate content within the specified mask using a generative model."""
+        masks = self.mask_service.get_masks()
+        if not (0 <= mask_index < len(masks)):
+            print(f"Error: mask_index {mask_index} out of range (0-{len(masks)-1})")
+            return None
+
+        mask_data = masks[mask_index]
+        original_mask = mask_data.get("segmentation")
+        if original_mask is None:
+            print("Error: No segmentation data in mask")
+            return None
+
+        # CRITICAL: Free up GPU memory before inpainting
+        print("Preparing GPU memory for inpainting...")
+        self._prepare_gpu_memory_for_inpainting()
+
+        # Get the base image for inpainting (before processing effects)
+        base_image = self._get_base_image_for_inpainting()
+        if base_image is None:
+            print("Error: Could not get base image for inpainting")
+            return None
+
+        # Transform mask if needed to match the base image coordinate system
+        transformed_mask = self._transform_mask_for_inpainting(original_mask)
+        
+        # Validate mask dimensions match image
+        if transformed_mask.shape[:2] != base_image.shape[:2]:
+            print(f"Warning: Mask shape {transformed_mask.shape[:2]} doesn't match image shape {base_image.shape[:2]}")
+            # Resize mask to match image
+            import cv2
+            transformed_mask = cv2.resize(
+                transformed_mask.astype(np.uint8), 
+                (base_image.shape[1], base_image.shape[0]), 
+                interpolation=cv2.INTER_NEAREST
+            ).astype(bool)
+
+        # Ensure mask has valid content
+        if not np.any(transformed_mask):
+            print("Error: Mask is empty after transformation")
+            return None
+
+        print(f"Inpainting with image shape: {base_image.shape}, mask shape: {transformed_mask.shape}")
+        print(f"Mask area: {np.sum(transformed_mask)} pixels ({np.sum(transformed_mask)/transformed_mask.size*100:.1f}%)")
+        
+        # Perform inpainting
+        result = self.generative_service.reimagine(base_image, transformed_mask, prompt, negative_prompt=negative_prompt, **generate_kwargs)
+        if result is None:
+            print("Error: Generative service returned None")
+            return None
+
+        # Ensure result and image have compatible formats
+        if base_image.ndim == 3 and result.ndim == 3:
+            if base_image.shape[2] == 4 and result.shape[2] == 3:
+                import cv2
+                result = cv2.cvtColor(result, cv2.COLOR_RGB2RGBA)
+            elif base_image.shape[2] == 3 and result.shape[2] == 4:
+                import cv2
+                result = cv2.cvtColor(result, cv2.COLOR_RGBA2RGB)
+
+        # Ensure result dimensions match image
+        if result.shape[:2] != base_image.shape[:2]:
+            import cv2
+            result = cv2.resize(result, (base_image.shape[1], base_image.shape[0]))
+
+        # Create final mask for blending
+        if transformed_mask.dtype != bool:
+            mask_bool = transformed_mask > 0
+        else:
+            mask_bool = transformed_mask
+
+        # Apply inpainting result
+        blended = base_image.copy()
+        if base_image.shape[2] == 4:
+            # Handle RGBA images
+            blended[mask_bool] = result[mask_bool]
+        else:
+            # Handle RGB images
+            blended[mask_bool] = result[mask_bool]
+
+        # Save the inpainting result to PNG
+        self._save_inpainting_result(blended, result, mask_bool, prompt, negative_prompt, mask_index)
+
+        # Save pre-inpainting state before modifying the image processor
+        if self.image_service.image_processor:
+            pre_inpainting_state = {
+                'original_image': self.image_service.image_processor.original.copy(),
+                'committed_global_edits': self.image_service.image_processor.committed_global_edits.copy(),
+                'committed_mask_edits': self.image_service.image_processor.committed_mask_edits.copy()
+            }
+            self.mask_service.save_pre_inpainting_state(mask_index, pre_inpainting_state)
+            print(f"Saved pre-inpainting state for mask {mask_index}")
+
+        # Update image processor to use the blended result
+        self._update_image_processor_with_result(blended)
+
+        return blended
     
-    def get_image_service(self) -> ImageService:
-        """Get the image service."""
-        return self.image_service
+    def _get_base_image_for_inpainting(self) -> Optional[np.ndarray]:
+        """Get the appropriate base image for inpainting - should be the original unprocessed image."""
+        # Priority 1: Use the image processor's original image (unprocessed)
+        if (self.image_service.image_processor and 
+            hasattr(self.image_service.image_processor, 'original') and
+            self.image_service.image_processor.original is not None):
+            return self.image_service.image_processor.original.copy()
+        
+        # Priority 2: Use crop/rotate UI's original image if available (has crop/rotate/flip applied)
+        if (self.image_service.crop_rotate_ui and 
+            hasattr(self.image_service.crop_rotate_ui, 'original_image') and
+            self.image_service.crop_rotate_ui.original_image is not None):
+            return self.image_service.crop_rotate_ui.original_image.copy()
+        
+        # Priority 3: Use the raw current image as fallback
+        if self.image_service.current_image is not None:
+            return self.image_service.current_image.copy()
+        
+        return None
+    
+    def _transform_mask_for_inpainting(self, mask: np.ndarray) -> np.ndarray:
+        """Transform mask coordinates to match the inpainting image coordinate system."""
+        # For now, return the mask as-is since we're using the original image
+        # In the future, this could handle coordinate transformations if needed
+        return mask.copy()
+    
+    def _update_image_processor_with_result(self, blended_image: np.ndarray) -> None:
+        """Update the image processor with the inpainting result."""
+        try:
+            if self.image_service.image_processor:
+                proc = self.image_service.image_processor
+                # With the new architecture, we need to update the original image
+                # and clear any existing edits since the inpainting result becomes the new base
+                proc.original = blended_image.copy()
+                # Clear all edits since they've been baked into the new image
+                proc.committed_global_edits = {
+                    'exposure': 0,
+                    'illumination': 0,
+                    'contrast': 1.0,
+                    'shadow': 0,
+                    'highlights': 0,
+                    'whites': 0,
+                    'blacks': 0,
+                    'saturation': 1.0,
+                    'texture': 0,
+                    'grain': 0,
+                    'temperature': 0,
+                    'curves_data': None
+                }
+                proc.committed_mask_edits.clear()
+                proc.reset_current_parameters()
+                proc.clear_optimization_cache()
+            
+            # Update current image
+            self.image_service.current_image = blended_image.copy()
+            
+            # Update crop/rotate UI if available
+            if self.image_service.crop_rotate_ui:
+                self.image_service.crop_rotate_ui.original_image = blended_image.copy()
+                
+        except Exception as e:
+            print(f"Warning: Could not update image processor with result: {e}")
+
+    def _save_inpainting_result(self, blended_image: np.ndarray, generated_content: np.ndarray, 
+                               mask: np.ndarray, prompt: str, negative_prompt: str = "", mask_index: int = -1) -> None:
+        """Save inpainting results to PNG files."""
+        import cv2
+        import os
+        from datetime import datetime
+        
+        # Create output directory if it doesn't exist
+        output_dir = "inpainting_results"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Create timestamp for unique filenames
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Clean prompts for filename (remove special characters)
+        clean_positive = "".join(c for c in prompt if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        clean_positive = clean_positive.replace(' ', '_')[:30] if clean_positive else "no_prompt"
+        
+        clean_negative = "".join(c for c in negative_prompt if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        clean_negative = clean_negative.replace(' ', '_')[:20] if clean_negative else ""
+        
+        # Create filename with both prompts
+        if clean_negative:
+            filename_suffix = f"{clean_positive}_neg_{clean_negative}"
+        else:
+            filename_suffix = clean_positive
+        
+        # Save the full blended result
+        blended_filename = f"{output_dir}/inpainted_full_{timestamp}_{filename_suffix}.png"
+        
+        # Convert from RGB/RGBA to BGR for OpenCV saving
+        if blended_image.shape[2] == 4:  # RGBA
+            blended_bgr = cv2.cvtColor(blended_image, cv2.COLOR_RGBA2BGRA)
+        else:  # RGB
+            blended_bgr = cv2.cvtColor(blended_image, cv2.COLOR_RGB2BGR)
+            
+        cv2.imwrite(blended_filename, blended_bgr)
+        print(f"Saved full inpainting result to: {blended_filename}")
+        
+        # Save just the generated content area
+        generated_only = np.zeros_like(blended_image)
+        generated_only[mask] = generated_content[mask]
+        
+        generated_filename = f"{output_dir}/inpainted_mask_only_{timestamp}_{filename_suffix}.png"
+        
+        if generated_only.shape[2] == 4:  # RGBA
+            generated_bgr = cv2.cvtColor(generated_only, cv2.COLOR_RGBA2BGRA)
+        else:  # RGB
+            generated_bgr = cv2.cvtColor(generated_only, cv2.COLOR_RGB2BGR)
+            
+        cv2.imwrite(generated_filename, generated_bgr)
+        print(f"Saved generated content only to: {generated_filename}")
+        
+        # Track inpainting files for this mask
+        if mask_index >= 0:
+            saved_files = [blended_filename, generated_filename]
+            self.mask_service.add_inpainting_files(mask_index, saved_files)
+            print(f"Associated inpainting files with mask {mask_index}: {len(saved_files)} files")
+
+    def clear_all_masks(self) -> None:
+        """Clear all masks and reset image processor to original state."""
+        # Clear mask service data
+        self.mask_service.clear_all_masks()
+        
+        # Reset image processor to original state if available
+        if (self.image_service and self.image_service.image_processor):
+            processor = self.image_service.image_processor
+            
+            # Disable mask editing
+            processor.set_mask_editing(False)
+            
+            # Clear all committed mask edits (removes all mask edits from the processor)
+            if hasattr(processor, 'committed_mask_edits'):
+                processor.committed_mask_edits.clear()
+                processor.clear_optimization_cache()
     
     def get_mask_service(self) -> MaskService:
         """Get the mask service."""
@@ -615,6 +410,9 @@ class ApplicationService:
             # Cleanup segmentation service (frees GPU memory)
             if hasattr(self.segmentation_service, 'cleanup'):
                 self.segmentation_service.cleanup()
+
+            if hasattr(self.generative_service, 'cleanup'):
+                self.generative_service.cleanup()
             
             # Clear CUDA cache
             MemoryManager.clear_cuda_cache()
@@ -624,3 +422,46 @@ class ApplicationService:
             
         except Exception as e:
             print(f"Cleanup error: {e}")
+    
+    def _prepare_gpu_memory_for_inpainting(self):
+        """Prepare GPU memory for inpainting by freeing up resources from other models."""
+        try:
+            print("Freeing GPU memory before inpainting...")
+            
+            # 1. Clean up segmentation service if it exists and has resources
+            if self._segmentation_service is not None:
+                if hasattr(self._segmentation_service, 'segmenter') and self._segmentation_service.segmenter is not None:
+                    print("Moving segmentation model to CPU to free GPU memory...")
+                    self._segmentation_service.segmenter.cleanup_memory()
+            
+            # 2. Force garbage collection and CUDA cache cleanup
+            MemoryManager.clear_cuda_cache()
+            
+            # 3. Check available memory
+            memory_info = MemoryManager.get_device_info()
+            print(f"GPU memory after cleanup: {memory_info['free_mb']:.0f}MB free of {memory_info['total_mb']:.0f}MB total")
+            
+            # 4. If still low on memory, try more aggressive cleanup
+            if memory_info['free_mb'] < 2000:  # Less than 2GB free
+                print("Low GPU memory detected, performing aggressive cleanup...")
+                
+                # Clear any cached states in image processor
+                if (self.image_service and 
+                    self.image_service.image_processor and 
+                    hasattr(self.image_service.image_processor, 'clear_optimization_cache')):
+                    self.image_service.image_processor.clear_optimization_cache()
+                
+                # Additional cleanup
+                MemoryManager.clear_cuda_cache()
+                
+                # Re-check memory
+                memory_info = MemoryManager.get_device_info()
+                print(f"GPU memory after aggressive cleanup: {memory_info['free_mb']:.0f}MB free")
+                
+                if memory_info['free_mb'] < 1500:  # Still less than 1.5GB
+                    print("WARNING: GPU memory still low. Inpainting may fail or be very slow.")
+                    print("Consider closing other GPU-intensive applications or using a smaller model.")
+            
+        except Exception as e:
+            print(f"Error during GPU memory preparation: {e}")
+            # Continue anyway - this is best-effort cleanup

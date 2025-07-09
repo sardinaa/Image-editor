@@ -102,7 +102,8 @@ class CropPanel(BasePanel):
                     from utils.ui_helpers import MaskOverlayManager
                     MaskOverlayManager.hide_all_overlays(len(self.main_window.layer_masks))
                 else:
-                    self.main_window.update_mask_overlays(self.main_window.layer_masks)
+                    # When re-enabling masks after crop mode, show them
+                    self.main_window.update_mask_overlays(self.main_window.layer_masks, auto_show_first=True)
             except Exception as e:
                 print(f"Error handling mask overlays during crop mode toggle: {e}")
         
@@ -140,9 +141,9 @@ class CropPanel(BasePanel):
             if not crop_mode_active and masks_enabled and show_overlay:
                 masks = self.main_window.app_service.get_mask_service().get_masks()
                 if masks:
-                    # Update mask overlays to apply current rotation
+                    # Update mask overlays to apply current rotation and re-show existing masks
                     self.main_window.mask_overlay_renderer.update_mask_overlays(
-                        masks, self.main_window.crop_rotate_ui
+                        masks, self.main_window.crop_rotate_ui, auto_show_first=True
                     )
         
         self._param_changed(sender, app_data, user_data)
@@ -200,17 +201,6 @@ class CropPanel(BasePanel):
             crop_rotate_ui.toggle_flip_vertical()
         
         self._param_changed(sender, app_data, user_data)
-    
-    def _update_flip_display(self):
-        """Update the crop/rotate display to show flips."""
-        crop_rotate_ui = None
-        if self.crop_and_rotate_ref:
-            crop_rotate_ui = self.crop_and_rotate_ref()
-        elif self.main_window and hasattr(self.main_window, 'crop_rotate_ui'):
-            crop_rotate_ui = self.main_window.crop_rotate_ui
-            
-        if crop_rotate_ui:
-            crop_rotate_ui.update_image(None, None, None)
     
     def get_parameters(self) -> Dict[str, Any]:
         """Get current crop parameters."""

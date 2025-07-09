@@ -1,6 +1,6 @@
 import dearpygui.dearpygui as dpg
 from typing import Dict
-from ui.tool_panel_modular import ModularToolPanel
+from ui.components.tool_panel_modular import ModularToolPanel
 
 class LayoutManager:
     """Manages window layout and resizing logic."""

@@ -15,10 +15,10 @@ import traceback
 sys.path.append(str(Path(__file__).parent))
 
 from core.application import ApplicationService
-from ui.main_window_production import ProductionMainWindow
+from ui.windows.main_window_production import ProductionMainWindow
 from utils.memory_utils import setup_memory_optimization, MemoryManager
 from utils.ui_helpers import setup_ui_theme
-from ui.crop_rotate import CropRotateUI
+from ui.interactions.crop_rotate import CropRotateUI
 from processing.image_processor import ImageProcessor
 
 
@@ -107,6 +107,8 @@ class ProductionImageEditor:
             
             # Create processor and CropRotateUI
             processor = ImageProcessor(image.copy())
+            # Ensure we start in global editing mode
+            processor.switch_to_global_editing()
             crop_rotate_ui = CropRotateUI(image, processor)
             
             # Update CropRotateUI to use the production main window's axis tags
@@ -140,6 +142,13 @@ class ProductionImageEditor:
             crop_rotate_ui.offset_y = offset_y
             
             self.main_window.set_crop_rotate_ui(crop_rotate_ui)
+            
+            # CRITICAL: Connect the crop_rotate_ui to the image service for proper restoration
+            if self.app_service.image_service:
+                self.app_service.image_service.image_processor = processor
+                self.app_service.image_service.crop_rotate_ui = crop_rotate_ui
+                self.app_service.image_service.current_image = image.copy()
+            
             # Only reset axis limits for initial image load, allow free panning afterward
             if not hasattr(crop_rotate_ui, '_axis_limits_initialized'):
                 crop_rotate_ui.update_axis_limits()
@@ -192,8 +201,27 @@ class ProductionImageEditor:
             if self.main_window:
                 self.main_window.cleanup()
             
+            # CRITICAL: Force cleanup of GPU-intensive services before general cleanup
+            if hasattr(self.app_service, '_generative_service') and self.app_service._generative_service:
+                print("Cleaning up generative service...")
+                self.app_service._generative_service.cleanup()
+            
+            if hasattr(self.app_service, '_segmentation_service') and self.app_service._segmentation_service:
+                print("Cleaning up segmentation service...")
+                if hasattr(self.app_service._segmentation_service, 'cleanup'):
+                    self.app_service._segmentation_service.cleanup()
+            
+            # General application cleanup
             self.app_service.cleanup()
             self.memory_manager.cleanup_gpu_memory()
+            
+            # Clean up performance optimizations
+            if (hasattr(self.main_window, 'tool_panel') and 
+                self.main_window.tool_panel and 
+                hasattr(self.main_window.tool_panel, 'masks_panel')):
+                masks_panel = self.main_window.tool_panel.masks_panel
+                if hasattr(masks_panel, 'cleanup_performance_optimizations'):
+                    masks_panel.cleanup_performance_optimizations()
             
             dpg.destroy_context()
             

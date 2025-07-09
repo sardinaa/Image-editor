@@ -180,14 +180,6 @@ class PanelManager:
         """Get a panel by name."""
         return self.panels.get(name)
     
-    def draw_all_panels(self) -> None:
-        """Draw all registered panels in order."""
-        for panel_name in self.panel_order:
-            if panel_name in self.panels:
-                panel = self.panels[panel_name]
-                if panel.is_visible:
-                    panel.draw()
-    
     def get_all_parameters(self) -> Dict[str, Any]:
         """Get parameters from all panels."""
         all_params = {}
@@ -209,18 +201,3 @@ class PanelManager:
         """Set parameters for all panels."""
         for panel in self.panels.values():
             panel.set_parameters(params)
-    
-    def show_panel(self, name: str) -> None:
-        """Show a specific panel."""
-        if name in self.panels:
-            self.panels[name].show()
-    
-    def hide_panel(self, name: str) -> None:
-        """Hide a specific panel."""
-        if name in self.panels:
-            self.panels[name].hide()
-    
-    def toggle_panel(self, name: str) -> None:
-        """Toggle a specific panel."""
-        if name in self.panels:
-            self.panels[name].toggle()
