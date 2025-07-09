@@ -8,6 +8,7 @@ DSC06848.ARW
 no.png
 si.png
 vene.jpg
+/inpainting_results/
 __pycache__/prova.cpython-312.pyc
 processing/__pycache__/image_processor.cpython-312.pyc
 processing/__pycache__/image_processor.cpython-312.pyc
@@ -137,3 +138,4 @@ _1340400.png
 DSC03463.png
 DSC09137.png
 kayak.jpg
+oruga.png

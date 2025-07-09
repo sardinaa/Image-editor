@@ -572,12 +572,53 @@ class ProductionMainWindow:
         if not self.brush_renderer or not self.crop_rotate_ui:
             return False
         
-        # Get the mask scaled for the actual image
-        mask = self.brush_renderer.get_mask_for_image_coords(
-            self.crop_rotate_ui.orig_w,
-            self.crop_rotate_ui.orig_h,
-            self.crop_rotate_ui.offset_x,
-            self.crop_rotate_ui.offset_y
+        # Get current transformation parameters
+        rotation_angle = 0
+        if dpg.does_item_exist("rotation_slider"):
+            rotation_angle = dpg.get_value("rotation_slider")
+            # Normalize angle to [0, 360) range
+            rotation_angle = rotation_angle % 360
+        
+        # Get flip states from crop_rotate_ui
+        flip_states = self.crop_rotate_ui.get_flip_states()
+        flip_horizontal = flip_states.get('flip_horizontal', False)
+        flip_vertical = flip_states.get('flip_vertical', False)
+        
+        print(f"DEBUG: Adding brush mask with rotation={rotation_angle}°, flips=H:{flip_horizontal},V:{flip_vertical}")
+        
+        # For transformations, we need to consider whether we're extracting from rotated or original dimensions
+        # When there's rotation, the displayed image has different dimensions
+        extract_width = self.crop_rotate_ui.orig_w
+        extract_height = self.crop_rotate_ui.orig_h
+        extract_offset_x = self.crop_rotate_ui.offset_x
+        extract_offset_y = self.crop_rotate_ui.offset_y
+        
+        # If image is rotated, we need to use the rotated dimensions for extraction
+        # because that's what the brush was drawn on
+        if abs(rotation_angle) > 0.01 and hasattr(self.crop_rotate_ui, 'rot_w') and hasattr(self.crop_rotate_ui, 'rot_h'):
+            if self.crop_rotate_ui.rot_w > 0 and self.crop_rotate_ui.rot_h > 0:
+                extract_width = self.crop_rotate_ui.rot_w  
+                extract_height = self.crop_rotate_ui.rot_h
+                print(f"DEBUG: Using rotated dimensions for extraction: {extract_width}x{extract_height}")
+            else:
+                print(f"DEBUG: Using original dimensions for extraction: {extract_width}x{extract_height}")
+        else:
+            print(f"DEBUG: No rotation, using original dimensions: {extract_width}x{extract_height}")
+        
+        print(f"DEBUG: Extraction area: {extract_width}x{extract_height} at offset ({extract_offset_x}, {extract_offset_y})")
+        print(f"DEBUG: Target (original image) dimensions: {self.crop_rotate_ui.orig_w}x{self.crop_rotate_ui.orig_h}")
+        
+        # Get the mask scaled for the actual image with transformations applied
+        mask = self.brush_renderer.get_mask_for_image_coords_with_transforms(
+            extract_width,
+            extract_height,
+            extract_offset_x,
+            extract_offset_y,
+            rotation_angle,
+            flip_horizontal,
+            flip_vertical,
+            target_width=self.crop_rotate_ui.orig_w,  # Always target original image dimensions
+            target_height=self.crop_rotate_ui.orig_h
         )
         
         # Check if mask has any content

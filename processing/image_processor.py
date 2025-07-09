@@ -143,6 +143,45 @@ class ImageProcessor:
         # Clear optimization cache when edits change
         self.clear_optimization_cache()
     
+    def delete_mask_edits(self, mask_id):
+        """
+        Delete committed edits for a specific mask and adjust indices for subsequent masks.
+        
+        Args:
+            mask_id: The mask ID to delete (typically an integer index)
+        """
+        # Remove committed edits for the deleted mask
+        if mask_id in self.committed_mask_edits:
+            del self.committed_mask_edits[mask_id]
+        
+        # Adjust mask IDs for masks after the deleted one (only for integer IDs)
+        if isinstance(mask_id, int):
+            new_committed_mask_edits = {}
+            for mid, edit_data in self.committed_mask_edits.items():
+                if isinstance(mid, int) and mid > mask_id:
+                    # Shift index down by 1
+                    new_committed_mask_edits[mid - 1] = edit_data
+                elif isinstance(mid, int) and mid < mask_id:
+                    # Keep same index
+                    new_committed_mask_edits[mid] = edit_data
+                else:
+                    # Handle non-integer mask IDs
+                    new_committed_mask_edits[mid] = edit_data
+            
+            self.committed_mask_edits = new_committed_mask_edits
+        
+        # Update current mask if it was the deleted one or needs index adjustment
+        if isinstance(self.current_mask_id, int) and isinstance(mask_id, int):
+            if self.current_mask_id == mask_id:
+                self.current_mask_id = None
+                self.mask_editing_enabled = False
+                self.current_mask = None
+            elif self.current_mask_id > mask_id:
+                self.current_mask_id -= 1
+        
+        # Clear optimization cache
+        self.clear_optimization_cache()
+    
     def load_global_parameters(self):
         """
         Loads committed global parameters into current parameters for global editing mode.

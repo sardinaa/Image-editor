@@ -365,3 +365,143 @@ class BrushRenderer:
         
         # Convert to binary mask (0 or 255 values)
         return (mask_section > 127).astype(np.uint8) * 255
+    
+    def get_mask_for_image_coords_with_transforms(self, image_width: int, image_height: int, 
+                                                 offset_x: int = 0, offset_y: int = 0,
+                                                 rotation_angle: float = 0, 
+                                                 flip_horizontal: bool = False,
+                                                 flip_vertical: bool = False,
+                                                 target_width: int = None,
+                                                 target_height: int = None) -> np.ndarray:
+        """Get the mask scaled and positioned for the actual image coordinates with rotation/flip transforms.
+        
+        The coordinate transformation workflow:
+        1. Original image -> rotate -> flip -> display (where brush was drawn)
+        2. Brush mask (in display coordinates) -> undo flip -> undo rotate -> original coordinates
+        """
+        import cv2
+        import numpy as np
+        
+        try:
+            # If target dimensions not specified, use the image dimensions
+            if target_width is None:
+                target_width = image_width
+            if target_height is None:
+                target_height = image_height
+                
+            print(f"DEBUG: BrushRenderer transforming mask - rotation={rotation_angle}°, flips=H:{flip_horizontal},V:{flip_vertical}")
+            print(f"DEBUG: Display dimensions: {image_width}x{image_height}, Target: {target_width}x{target_height}")
+            print(f"DEBUG: Texture offset: ({offset_x}, {offset_y})")
+                
+            # Step 1: Extract the brush mask from the texture coordinates where the transformed image was displayed
+            y_start = max(0, offset_y)
+            y_end = min(self.texture_height, offset_y + image_height)
+            x_start = max(0, offset_x)
+            x_end = min(self.texture_width, offset_x + image_width)
+            
+            # Get the mask section that corresponds to the displayed (transformed) image area
+            mask_section = self.current_mask[y_start:y_end, x_start:x_end]
+            print(f"DEBUG: Extracted mask section shape: {mask_section.shape} from texture area [{y_start}:{y_end}, {x_start}:{x_end}]")
+            
+            # Ensure we have the correct dimensions for the displayed image
+            if mask_section.shape != (image_height, image_width):
+                mask_section = cv2.resize(mask_section, (image_width, image_height), 
+                                        interpolation=cv2.INTER_NEAREST)
+                print(f"DEBUG: Resized mask section to: {mask_section.shape}")
+            
+            # Step 2: Now we have the mask in the coordinate system of the transformed (rotated+flipped) image
+            # We need to apply inverse transformations to get back to original image coordinates
+            
+            result_mask = mask_section.copy()
+            
+            # First, undo flips (apply in reverse order from how they were applied to the image)
+            if flip_vertical:
+                print("DEBUG: Undoing vertical flip")
+                result_mask = cv2.flip(result_mask, 0)
+                
+            if flip_horizontal:
+                print("DEBUG: Undoing horizontal flip") 
+                result_mask = cv2.flip(result_mask, 1)
+            
+            # Then, undo rotation (if there was rotation)
+            if abs(rotation_angle) > 0.01:
+                print(f"DEBUG: Undoing rotation by {-rotation_angle}°")
+                
+                # The challenge: when we rotated the original image, its dimensions changed
+                # We need to map from rotated coordinates back to original coordinates
+                
+                # If the displayed image dimensions are different from target, we're dealing with a rotated image
+                if (image_width != target_width or image_height != target_height):
+                    # The mask is currently in the coordinate space of the rotated image
+                    # We need to "unrotate" it to get back to the original coordinate space
+                    
+                    # Create a larger canvas to hold the unrotated mask to avoid clipping
+                    diagonal = int(np.sqrt(image_width**2 + image_height**2)) + 10
+                    canvas = np.zeros((diagonal, diagonal), dtype=np.uint8)
+                    
+                    # Place the rotated mask in the center of the canvas
+                    canvas_center_y = diagonal // 2
+                    canvas_center_x = diagonal // 2
+                    start_y = canvas_center_y - image_height // 2
+                    start_x = canvas_center_x - image_width // 2
+                    canvas[start_y:start_y + image_height, start_x:start_x + image_width] = result_mask
+                    
+                    # Apply inverse rotation around the canvas center
+                    center = (canvas_center_x, canvas_center_y)
+                    rotation_matrix = cv2.getRotationMatrix2D(center, -rotation_angle, 1.0)
+                    
+                    unrotated_canvas = cv2.warpAffine(
+                        canvas, 
+                        rotation_matrix, 
+                        (diagonal, diagonal),
+                        flags=cv2.INTER_NEAREST,
+                        borderMode=cv2.BORDER_CONSTANT,
+                        borderValue=0
+                    )
+                    
+                    # Extract the original image area from the unrotated canvas
+                    extract_start_y = canvas_center_y - target_height // 2
+                    extract_start_x = canvas_center_x - target_width // 2
+                    
+                    result_mask = unrotated_canvas[
+                        extract_start_y:extract_start_y + target_height,
+                        extract_start_x:extract_start_x + target_width
+                    ]
+                    
+                    print(f"DEBUG: After inverse rotation and extraction: {result_mask.shape}")
+                    
+                else:
+                    # No dimension change, simple rotation around center
+                    center = (result_mask.shape[1] / 2, result_mask.shape[0] / 2)
+                    rotation_matrix = cv2.getRotationMatrix2D(center, -rotation_angle, 1.0)
+                    
+                    result_mask = cv2.warpAffine(
+                        result_mask, 
+                        rotation_matrix, 
+                        (result_mask.shape[1], result_mask.shape[0]),
+                        flags=cv2.INTER_NEAREST,
+                        borderMode=cv2.BORDER_CONSTANT,
+                        borderValue=0
+                    )
+                    print(f"DEBUG: After simple inverse rotation: {result_mask.shape}")
+            
+            # Step 3: Ensure final dimensions match target
+            if result_mask.shape != (target_height, target_width):
+                print(f"DEBUG: Final resize from {result_mask.shape} to ({target_height}, {target_width})")
+                result_mask = cv2.resize(result_mask, (target_width, target_height), 
+                                       interpolation=cv2.INTER_NEAREST)
+            
+            # Convert to binary mask (0 or 255 values)
+            final_result = (result_mask > 127).astype(np.uint8) * 255
+            print(f"DEBUG: Final mask has {np.sum(final_result > 0)} non-zero pixels out of {final_result.size}")
+            
+            return final_result
+            
+        except Exception as e:
+            print(f"ERROR: Failed to transform brush mask: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to original method
+            return self.get_mask_for_image_coords(target_width if target_width else image_width, 
+                                                target_height if target_height else image_height, 
+                                                offset_x, offset_y)

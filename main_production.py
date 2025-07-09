@@ -142,6 +142,13 @@ class ProductionImageEditor:
             crop_rotate_ui.offset_y = offset_y
             
             self.main_window.set_crop_rotate_ui(crop_rotate_ui)
+            
+            # CRITICAL: Connect the crop_rotate_ui to the image service for proper restoration
+            if self.app_service.image_service:
+                self.app_service.image_service.image_processor = processor
+                self.app_service.image_service.crop_rotate_ui = crop_rotate_ui
+                self.app_service.image_service.current_image = image.copy()
+            
             # Only reset axis limits for initial image load, allow free panning afterward
             if not hasattr(crop_rotate_ui, '_axis_limits_initialized'):
                 crop_rotate_ui.update_axis_limits()

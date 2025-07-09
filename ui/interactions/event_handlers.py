@@ -369,16 +369,16 @@ class EventHandlers:
         if not main_window:
             return False
         
-        # Delete selected masks through app service
+        # Use the masks panel's delete method to ensure proper cleanup
         if (hasattr(main_window, 'tool_panel') and 
             main_window.tool_panel and 
-            hasattr(main_window.tool_panel, 'get_selected_mask_indices')):
+            hasattr(main_window.tool_panel, 'panel_manager')):
             
-            selected_indices = main_window.tool_panel.get_selected_mask_indices()
-            for mask_index in sorted(selected_indices, reverse=True):
-                if self.app_service:
-                    self.app_service.delete_mask(mask_index)
-            return True
+            masks_panel = main_window.tool_panel.panel_manager.get_panel("masks")
+            if masks_panel and hasattr(masks_panel, '_delete_selected_masks'):
+                # Use the masks panel's delete method which includes proper cleanup
+                masks_panel._delete_selected_masks(None, None, None)
+                return True
         
         return False
 

@@ -119,7 +119,40 @@ class ApplicationService:
         return self.mask_service.get_masks(), self.mask_service.get_mask_names()
     
     def delete_mask(self, mask_index: int) -> bool:
-        """Delete a mask."""
+        """Delete a mask and restore pre-inpainting state if applicable."""
+        # Check if this mask has a pre-inpainting state that needs restoration
+        if (self.mask_service.get_pre_inpainting_state(mask_index) is not None and 
+            self.image_service.image_processor):
+            
+            # Restore the image processor to its pre-inpainting state
+            restored = self.mask_service.restore_pre_inpainting_state(
+                mask_index, self.image_service.image_processor
+            )
+            
+            if restored:
+                # CRITICAL: After restoration, we need to reprocess the image with remaining edits
+                processor = self.image_service.image_processor
+                
+                # Apply all remaining edits to get the current processed state
+                processed_image = processor.apply_all_edits()
+                if processed_image is not None:
+                    # Update the current image in the service
+                    self.image_service.current_image = processed_image.copy()
+                    
+                    # Update crop/rotate UI with the properly processed image
+                    if hasattr(self.image_service, 'crop_rotate_ui') and self.image_service.crop_rotate_ui:
+                        self.image_service.crop_rotate_ui.original_image = processed_image.copy()
+                        # Force texture update by calling update_image
+                        self.image_service.crop_rotate_ui.update_image(None, None, None)
+                    # Also update main window's crop rotate UI if different
+                    elif self.main_window and hasattr(self.main_window, 'crop_rotate_ui') and self.main_window.crop_rotate_ui:
+                        self.main_window.crop_rotate_ui.original_image = processed_image.copy()
+                        # Force texture update by calling update_image
+                        self.main_window.crop_rotate_ui.update_image(None, None, None)
+                
+                print(f"Restored and updated visual state for deleted mask {mask_index}")
+        
+        # Delete the mask (this also cleans up files and tracking)
         return self.mask_service.delete_mask(mask_index)
     
     def rename_mask(self, mask_index: int, new_name: str) -> bool:
@@ -207,7 +240,17 @@ class ApplicationService:
             blended[mask_bool] = result[mask_bool]
 
         # Save the inpainting result to PNG
-        self._save_inpainting_result(blended, result, mask_bool, prompt, negative_prompt)
+        self._save_inpainting_result(blended, result, mask_bool, prompt, negative_prompt, mask_index)
+
+        # Save pre-inpainting state before modifying the image processor
+        if self.image_service.image_processor:
+            pre_inpainting_state = {
+                'original_image': self.image_service.image_processor.original.copy(),
+                'committed_global_edits': self.image_service.image_processor.committed_global_edits.copy(),
+                'committed_mask_edits': self.image_service.image_processor.committed_mask_edits.copy()
+            }
+            self.mask_service.save_pre_inpainting_state(mask_index, pre_inpainting_state)
+            print(f"Saved pre-inpainting state for mask {mask_index}")
 
         # Update image processor to use the blended result
         self._update_image_processor_with_result(blended)
@@ -249,7 +292,20 @@ class ApplicationService:
                 # and clear any existing edits since the inpainting result becomes the new base
                 proc.original = blended_image.copy()
                 # Clear all edits since they've been baked into the new image
-                proc.committed_global_edits = proc._get_default_parameters()
+                proc.committed_global_edits = {
+                    'exposure': 0,
+                    'illumination': 0,
+                    'contrast': 1.0,
+                    'shadow': 0,
+                    'highlights': 0,
+                    'whites': 0,
+                    'blacks': 0,
+                    'saturation': 1.0,
+                    'texture': 0,
+                    'grain': 0,
+                    'temperature': 0,
+                    'curves_data': None
+                }
                 proc.committed_mask_edits.clear()
                 proc.reset_current_parameters()
                 proc.clear_optimization_cache()
@@ -265,7 +321,7 @@ class ApplicationService:
             print(f"Warning: Could not update image processor with result: {e}")
 
     def _save_inpainting_result(self, blended_image: np.ndarray, generated_content: np.ndarray, 
-                               mask: np.ndarray, prompt: str, negative_prompt: str = "") -> None:
+                               mask: np.ndarray, prompt: str, negative_prompt: str = "", mask_index: int = -1) -> None:
         """Save inpainting results to PNG files."""
         import cv2
         import os
@@ -316,6 +372,12 @@ class ApplicationService:
             
         cv2.imwrite(generated_filename, generated_bgr)
         print(f"Saved generated content only to: {generated_filename}")
+        
+        # Track inpainting files for this mask
+        if mask_index >= 0:
+            saved_files = [blended_filename, generated_filename]
+            self.mask_service.add_inpainting_files(mask_index, saved_files)
+            print(f"Associated inpainting files with mask {mask_index}: {len(saved_files)} files")
 
     def clear_all_masks(self) -> None:
         """Clear all masks and reset image processor to original state."""
